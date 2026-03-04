@@ -17,9 +17,10 @@ from analyzer import (
 )
 from profiles import detect_profile
 
-PROJECTS_DIR = Path("/projects")
-DOCS_DIR     = Path("/output/docs")
-STATUS_DIR   = Path("/output/status")
+# Suporta paths customizados (Windows nativo) ou defaults Docker
+PROJECTS_DIR = Path(os.getenv("PROJECTS_DIR", "/projects"))
+DOCS_DIR     = Path(os.getenv("DOCS_DIR",     "/output/docs"))
+STATUS_DIR   = Path(os.getenv("STATUS_DIR",   "/output/status"))
 
 DOCS_DIR.mkdir(parents=True, exist_ok=True)
 STATUS_DIR.mkdir(parents=True, exist_ok=True)

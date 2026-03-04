@@ -2,11 +2,14 @@
 Documently — Setup interativo
 Detecta hardware, recomenda modelo e gera .env para o docker-compose.
 Funciona em Linux, Mac e Windows 10/11.
+
+Flags:
+  --reset   Para tudo, limpa imagens/volumes/cache e reconstrói do zero
+  --help    Mostra esta ajuda
 """
 
 import os
 import sys
-import json
 import shutil
 import platform
 import subprocess
@@ -75,27 +78,123 @@ def get_ram_gb() -> int:
 
 
 def get_gpu_info() -> dict:
-    if not shutil.which("nvidia-smi"):
-        return {"found": False}
-    try:
-        out = subprocess.check_output(
-            ["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"],
-            stderr=subprocess.DEVNULL
-        ).decode().strip()
-        if not out:
-            return {"found": False}
-        parts = out.split(",")
-        return {
-            "found": True,
-            "name": parts[0].strip(),
-            "vram_gb": round(int(parts[1].strip()) / 1024, 1)
-        }
-    except Exception:
-        return {"found": False}
+    """Detecta GPU Nvidia (nvidia-smi), AMD (rocm-smi/rocminfo) ou Windows WMI."""
+
+    # ── Nvidia ────────────────────────────────────────────────────────
+    if shutil.which("nvidia-smi"):
+        try:
+            out = subprocess.check_output(
+                ["nvidia-smi", "--query-gpu=name,memory.total",
+                 "--format=csv,noheader,nounits"],
+                stderr=subprocess.DEVNULL
+            ).decode().strip()
+            if out:
+                parts = out.split(",")
+                return {
+                    "found":   True,
+                    "vendor":  "nvidia",
+                    "name":    parts[0].strip(),
+                    "vram_gb": round(int(parts[1].strip()) / 1024, 1),
+                }
+        except Exception:
+            pass
+
+    # ── AMD (rocm-smi) ────────────────────────────────────────────────
+    if shutil.which("rocm-smi"):
+        try:
+            out = subprocess.check_output(
+                ["rocm-smi", "--showmeminfo", "vram", "--csv"],
+                stderr=subprocess.DEVNULL
+            ).decode().strip()
+            # Formato: GPU[0], VRAM Total Memory (B), 8589934592
+            vram_bytes = 0
+            name       = "AMD GPU"
+            for line in out.splitlines():
+                if "VRAM Total Memory" in line:
+                    parts = line.split(",")
+                    if len(parts) >= 3:
+                        vram_bytes = int(parts[-1].strip())
+                        break
+            if vram_bytes:
+                return {
+                    "found":   True,
+                    "vendor":  "amd",
+                    "name":    name,
+                    "vram_gb": round(vram_bytes / 1024 / 1024 / 1024, 1),
+                }
+        except Exception:
+            pass
+
+    # ── AMD (rocminfo — fallback) ─────────────────────────────────────
+    if shutil.which("rocminfo"):
+        try:
+            out = subprocess.check_output(
+                ["rocminfo"], stderr=subprocess.DEVNULL
+            ).decode()
+            vram_gb = 0.0
+            name    = "AMD GPU"
+            for line in out.splitlines():
+                line = line.strip()
+                if "Marketing Name" in line:
+                    name = line.split(":", 1)[-1].strip()
+                if "Global Memory Size" in line:
+                    # Ex: "Global Memory Size:          8176( M)"
+                    import re
+                    m = re.search(r'(\d+)\s*\(\s*M\s*\)', line)
+                    if m:
+                        vram_gb = round(int(m.group(1)) / 1024, 1)
+            if vram_gb:
+                return {
+                    "found":   True,
+                    "vendor":  "amd",
+                    "name":    name,
+                    "vram_gb": vram_gb,
+                }
+        except Exception:
+            pass
+
+    # ── Windows WMI (Nvidia ou AMD sem drivers ROCm) ──────────────────
+    if platform.system() == "Windows":
+        try:
+            out = subprocess.check_output(
+                ["wmic", "path", "win32_VideoController",
+                 "get", "Name,AdapterRAM", "/format:csv"],
+                stderr=subprocess.DEVNULL
+            ).decode(errors="ignore").strip()
+            for line in out.splitlines():
+                parts = [p.strip() for p in line.split(",")]
+                if len(parts) < 3:
+                    continue
+                name     = parts[2]
+                ram_str  = parts[1]
+                name_low = name.lower()
+                if not ram_str.isdigit():
+                    continue
+                vram_gb = round(int(ram_str) / 1024 / 1024 / 1024, 1)
+                if vram_gb < 0.5:
+                    continue  # ignora GPUs integradas fracas
+                if "nvidia" in name_low:
+                    vendor = "nvidia"
+                elif "amd" in name_low or "radeon" in name_low:
+                    vendor = "amd"
+                elif "intel" in name_low:
+                    vendor = "intel"
+                else:
+                    vendor = "unknown"
+                if vendor in ("nvidia", "amd"):
+                    return {
+                        "found":   True,
+                        "vendor":  vendor,
+                        "name":    name,
+                        "vram_gb": vram_gb,
+                    }
+        except Exception:
+            pass
+
+    return {"found": False, "vendor": None}
 
 
 # ── Modelos disponíveis ───────────────────────────────────────────────
-# Nomes verificados no registry do Ollama (ollama.com/library)
 
 MODELS = [
     {
@@ -176,7 +275,7 @@ def ask(prompt: str, default: str = "") -> str:
 
 
 def ask_yes_no(prompt: str, default: bool = True) -> bool:
-    hint = "S/n" if default else "s/N"
+    hint   = "S/n" if default else "s/N"
     answer = ask(f"{prompt} ({hint})", "s" if default else "n")
     return answer.lower() in ("s", "sim", "y", "yes", "")
 
@@ -189,8 +288,7 @@ def choose_model(current: dict) -> dict:
             f"  {marker}{C.BOLD}{C.WHITE}[{i+1}]{C.RESET} "
             f"{C.CYAN}{m['label']}{C.RESET}\n"
             f"      {C.GRAY}Tamanho: ~{m['size_gb']}GB  |  "
-            f"Qualidade: {m['quality']}  |  "
-            f"Velocidade: {m['speed']}{C.RESET}\n"
+            f"Qualidade: {m['quality']}  |  Velocidade: {m['speed']}{C.RESET}\n"
             f"      {C.DIM}Ideal para: {m['best_for']}{C.RESET}\n"
         )
     choice = ask(
@@ -211,36 +309,215 @@ def choose_model(current: dict) -> dict:
 def generate_env(model: dict, gpu: dict) -> dict:
     gpu_layers = 0
     if gpu["found"]:
+        # AMD ROCm e Nvidia CUDA usam o mesmo parâmetro no Ollama
         gpu_layers = min(35, int((gpu["vram_gb"] * 1024) / 200))
     return {
-        "OLLAMA_MODEL": model["id"],
-        "MAX_TOKENS_PER_CHUNK": "3000",
-        "EXTENSIONS": ".sol,.py,.js,.ts,.go,.rs,.java",
-        "OLLAMA_NUM_GPU_LAYERS": str(gpu_layers),
-        "OLLAMA_NUM_PARALLEL": "1",
+        "OLLAMA_MODEL":           model["id"],
+        "MAX_TOKENS_PER_CHUNK":   "3000",
+        "EXTENSIONS":             ".sol,.py,.js,.ts,.go,.rs,.java",
+        "OLLAMA_NUM_GPU_LAYERS":  str(gpu_layers),
+        "OLLAMA_NUM_PARALLEL":    "1",
         "OLLAMA_MAX_LOADED_MODELS": "1",
     }
 
 
+
+def patch_compose(gpu: dict):
+    """
+    Ajusta o docker-compose.yml para usar o bloco de GPU correto:
+    - Nvidia → deploy.resources (CUDA)
+    - AMD    → devices /dev/kfd + /dev/dri (ROCm)
+    - CPU    → nenhum bloco de GPU
+    """
+    compose_path = Path("docker-compose.yml")
+    if not compose_path.exists():
+        warn("docker-compose.yml não encontrado — pulando patch de GPU")
+        return
+
+    content = compose_path.read_text(encoding="utf-8")
+    vendor  = gpu.get("vendor") if gpu.get("found") else None
+
+    # Remove todos os blocos de GPU existentes para reinserir o correto
+    import re
+
+    # Bloco Nvidia
+    nvidia_block = (
+        "    deploy:\n"
+        "      resources:\n"
+        "        reservations:\n"
+        "          devices:\n"
+        "            - driver: nvidia\n"
+        "              count: all\n"
+        "              capabilities: [gpu]\n"
+    )
+    # Bloco AMD (comentado → ativo)
+    amd_devices = (
+        "    devices:\n"
+        "      - /dev/kfd:/dev/kfd\n"
+        "      - /dev/dri:/dev/dri\n"
+        "    group_add:\n"
+        "      - video\n"
+        "      - render\n"
+    )
+
+    if vendor == "nvidia":
+        info("Configurando docker-compose.yml para GPU Nvidia (CUDA)")
+        # Garante que o bloco deploy está presente e AMD está comentado
+        if "deploy:" not in content:
+            content = content.replace(
+                "    env_file: .env\n    environment:\n      - OLLAMA_NUM_PARALLEL",
+                "    env_file: .env\n" + nvidia_block + "    environment:\n      - OLLAMA_NUM_PARALLEL",
+            )
+        success("docker-compose.yml → modo Nvidia CUDA")
+
+    elif vendor == "amd":
+        info("Configurando docker-compose.yml para GPU AMD (ROCm)")
+        # Remove bloco nvidia se existir, adiciona bloco AMD
+        content = re.sub(
+            r"    deploy:.*?capabilities: \[gpu\]\n",
+            "", content, flags=re.DOTALL
+        )
+        if "/dev/kfd" not in content:
+            content = content.replace(
+                "    env_file: .env\n    environment:",
+                "    env_file: .env\n" + amd_devices + "    environment:",
+            )
+        success("docker-compose.yml → modo AMD ROCm")
+        warn("Certifique-se de ter o ROCm instalado: https://rocm.docs.amd.com")
+
+    else:
+        info("Sem GPU dedicada — docker-compose.yml em modo CPU")
+        # Remove blocos de GPU
+        content = re.sub(
+            r"    deploy:.*?capabilities: \[gpu\]\n",
+            "", content, flags=re.DOTALL
+        )
+        content = re.sub(
+            r"    devices:\n.*?/dev/dri.*?\n(    group_add:.*?render\n)?",
+            "", content, flags=re.DOTALL
+        )
+        success("docker-compose.yml → modo CPU only")
+
+    compose_path.write_text(content, encoding="utf-8")
+
 def write_env(config: dict):
+    # Detecta UID/GID do usuário atual para o container não criar arquivos como root
+    uid = os.getuid() if hasattr(os, "getuid") else 1000
+    gid = os.getgid() if hasattr(os, "getgid") else 1000
     lines = [
         "# Gerado pelo setup.py do Documently",
         "# Para reconfigurar: python3 setup.py\n",
+        f"DOCKER_UID={uid}",
+        f"DOCKER_GID={gid}",
+        "",
     ]
     for key, value in config.items():
         lines.append(f"{key}={value}")
     Path(".env").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-# ── Main ──────────────────────────────────────────────────────────────
+# ── Reset ─────────────────────────────────────────────────────────────
+
+def run_cmd(cmd: list[str], label: str):
+    info(f"{label}...")
+    try:
+        subprocess.run(cmd, check=True)
+        success(label)
+    except subprocess.CalledProcessError as e:
+        warn(f"{label} retornou erro (pode ser normal): {e}")
+    except FileNotFoundError:
+        warn(f"comando não encontrado: {cmd[0]}")
+
+
+def do_reset(clean_docs: bool = True):
+    os.system("cls" if platform.system() == "Windows" else "clear")
+    print(f"\n{C.BOLD}{C.RED}{'─' * 50}{C.RESET}")
+    highlight("   🔄 Documently — Reset completo")
+    print(f"{C.BOLD}{C.RED}{'─' * 50}{C.RESET}\n")
+    warn("Isso vai parar os containers, apagar volumes e cache de build.")
+
+    if not ask_yes_no("Confirmar reset?", default=False):
+        info("Reset cancelado.")
+        return
+
+    step("1 / 4  Parando containers e apagando volumes...")
+    run_cmd(["docker", "compose", "down", "--volumes", "--remove-orphans"],
+            "docker compose down --volumes")
+
+    step("2 / 4  Removendo imagens do projeto...")
+    run_cmd(["docker", "rmi", "documently-analyzer", "--force"],
+            "remoção da imagem documently-analyzer")
+
+    step("3 / 4  Limpando cache de build...")
+    run_cmd(["docker", "builder", "prune", "-f"], "docker builder prune")
+
+    if clean_docs:
+        step("4 / 4  Limpando docs e status gerados...")
+        for folder in ["docs", "status"]:
+            p = Path(folder)
+            if not p.exists():
+                dim(f"  pasta {folder}/ não encontrada, pulando")
+                continue
+            try:
+                shutil.rmtree(p)
+                success(f"pasta {folder}/ removida")
+            except PermissionError:
+                # Arquivos criados pelo Docker rodam como root
+                warn(f"permissão negada em {folder}/ — tentando com sudo...")
+                try:
+                    subprocess.run(["sudo", "rm", "-rf", str(p)], check=True)
+                    success(f"pasta {folder}/ removida (via sudo)")
+                except subprocess.CalledProcessError:
+                    error(
+                        f"Não foi possível remover {folder}/. "
+                        f"Rode manualmente: sudo rm -rf {folder}/"
+                    )
+    else:
+        step("4 / 4  Mantendo docs e status (pulado)")
+
+    print(f"\n{C.GREEN}{C.BOLD}  ✅ Reset concluído!{C.RESET}")
+    info("Rode agora:  python3 setup.py  para reconfigurar e rebuildar.")
+    print()
+
+
+# ── Setup principal ───────────────────────────────────────────────────
 
 def main():
+    # ── Flags de linha de comando ─────────────────────────────────────
+    args = sys.argv[1:]
+
+    if "--help" in args or "-h" in args:
+        print(__doc__)
+        sys.exit(0)
+
+    if "--reset" in args:
+        keep_docs = "--keep-docs" in args
+        do_reset(clean_docs=not keep_docs)
+        if not ask_yes_no("\nIniciar setup agora?", default=True):
+            sys.exit(0)
+
     os.system("cls" if platform.system() == "Windows" else "clear")
 
     print(f"\n{C.BOLD}{C.PURPLE}{'─' * 50}{C.RESET}")
     highlight("   🔍 Documently — Setup")
     print(f"{C.BOLD}{C.PURPLE}{'─' * 50}{C.RESET}\n")
     dim("   Vamos configurar o ambiente para o seu hardware.\n")
+
+    # ── Menu de opções extras ─────────────────────────────────────────
+    print(f"  {C.BOLD}Opções:{C.RESET}")
+    print(f"  {C.WHITE}[1]{C.RESET} Configuração normal")
+    print(f"  {C.WHITE}[2]{C.RESET} Reset completo (limpa containers, imagens, cache, docs)")
+    print(f"  {C.WHITE}[3]{C.RESET} Reset parcial (limpa containers e cache, mantém docs)\n")
+    choice = ask("Escolha", "1")
+
+    if choice == "2":
+        do_reset(clean_docs=True)
+        if not ask_yes_no("Continuar com o setup?", default=True):
+            sys.exit(0)
+    elif choice == "3":
+        do_reset(clean_docs=False)
+        if not ask_yes_no("Continuar com o setup?", default=True):
+            sys.exit(0)
 
     # ── 1. Detecta hardware ───────────────────────────────────────────
     step("1 / 4  Detectando hardware...")
@@ -255,28 +532,31 @@ def main():
         ram_gb = int(ask("Digite a RAM total em GB", "16"))
 
     if gpu["found"]:
+        vendor_label = {"nvidia": "Nvidia", "amd": "AMD", "intel": "Intel"}.get(gpu.get("vendor", ""), "GPU")
         success(
-            f"GPU detectada: {C.CYAN}{gpu['name']}{C.RESET} "
+            f"{vendor_label} detectada: {C.CYAN}{gpu['name']}{C.RESET} "
             f"com {C.CYAN}{gpu['vram_gb']} GB{C.RESET} de VRAM"
         )
+        if gpu.get("vendor") == "amd":
+            info("GPU AMD detectada — certifique-se de ter o ROCm instalado para aceleração GPU.")
+            info("Sem ROCm, o Ollama usará a CPU. Mais info: https://rocm.docs.amd.com")
     else:
-        warn("Nenhuma GPU Nvidia detectada — Ollama usará a CPU.")
-        if ask_yes_no("Você tem GPU Nvidia mas nvidia-smi não foi encontrado?", default=False):
-            vram = float(ask("Quantos GB de VRAM?", "4"))
-            name = ask("Nome da GPU (opcional)", "Nvidia GPU")
-            gpu = {"found": True, "name": name, "vram_gb": vram}
+        warn("Nenhuma GPU dedicada detectada — Ollama usará a CPU.")
+        if ask_yes_no("Você tem GPU (Nvidia ou AMD) mas os drivers não foram detectados?", default=False):
+            vram   = float(ask("Quantos GB de VRAM?", "4"))
+            name   = ask("Nome da GPU (ex: RTX 3060 / RX 6700 XT)", "GPU")
+            vendor = "amd" if any(x in name.lower() for x in ["amd", "rx", "radeon", "vega"]) else "nvidia"
+            gpu    = {"found": True, "vendor": vendor, "name": name, "vram_gb": vram}
 
     # ── 2. Recomenda modelo ───────────────────────────────────────────
     step("2 / 4  Recomendando modelo...")
 
     recommended = recommend_model(ram_gb, gpu)
-
     print(f"\n  {C.BOLD}Modelo recomendado:{C.RESET}")
     print(
         f"  {C.GREEN}▶ {C.CYAN}{C.BOLD}{recommended['label']}{C.RESET}\n"
         f"  {C.GRAY}  Tamanho: ~{recommended['size_gb']}GB  |  "
-        f"Qualidade: {recommended['quality']}  |  "
-        f"Velocidade: {recommended['speed']}{C.RESET}\n"
+        f"Qualidade: {recommended['quality']}  |  Velocidade: {recommended['speed']}{C.RESET}\n"
         f"  {C.DIM}  Ideal para: {recommended['best_for']}{C.RESET}\n"
     )
 
@@ -287,42 +567,44 @@ def main():
 
     # ── 3. Gera .env ──────────────────────────────────────────────────
     step("3 / 4  Gerando .env...")
-
     config = generate_env(chosen, gpu)
-
     print(f"\n  {C.DIM}{'─' * 44}{C.RESET}")
     for key, value in config.items():
         print(f"  {C.YELLOW}{key}{C.RESET}={C.WHITE}{value}{C.RESET}")
     print(f"  {C.DIM}{'─' * 44}{C.RESET}\n")
-
     write_env(config)
+    patch_compose(gpu)
     success(f"Arquivo {C.WHITE}.env{C.RESET}{C.GREEN} criado com sucesso!")
+
+    # Cria pastas de output com permissão do usuário atual
+    # evita que o Docker crie como root
+    for folder in ["docs", "status", "projects"]:
+        Path(folder).mkdir(exist_ok=True)
+    success("Pastas docs/ status/ projects/ garantidas com permissão correta")
 
     # ── 4. Finaliza ───────────────────────────────────────────────────
     step("4 / 4  Tudo pronto!")
-
     info(f"Coloque seus projetos em {C.WHITE}./projects/{C.RESET}")
     info(f"Documentação gerada em   {C.WHITE}./docs/<projeto>/{C.RESET}")
     info(f"Resumo geral em          {C.WHITE}./docs/<projeto>/_resumo.md{C.RESET}")
 
     print()
-    if ask_yes_no("Rodar agora? (docker compose up)", default=True):
+    if ask_yes_no("Rodar agora? (docker compose up --build)", default=True):
         print()
         info("Iniciando... (pressione Ctrl+C para parar)\n")
         try:
-            subprocess.run(["docker", "compose", "up"], check=True)
+            subprocess.run(["docker", "compose", "up", "--build"], check=True)
         except subprocess.CalledProcessError:
             print()
-            error("Docker retornou um erro. Tente rodar manualmente:")
-            info(f"  docker compose down && docker compose up")
+            error("Docker retornou um erro. Tente:")
+            info("  python3 setup.py --reset")
         except KeyboardInterrupt:
             print()
             warn("Interrompido.")
         except FileNotFoundError:
-            error("Docker não encontrado. Instale em: https://docs.docker.com/get-docker/")
+            error("Docker não encontrado: https://docs.docker.com/get-docker/")
     else:
-        print()
-        info(f"Quando quiser rodar: {C.WHITE}docker compose up{C.RESET}")
+        info(f"Quando quiser rodar: {C.WHITE}docker compose up --build{C.RESET}")
 
     print(f"\n{C.BOLD}{C.PURPLE}{'─' * 50}{C.RESET}\n")
 

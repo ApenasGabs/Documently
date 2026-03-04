@@ -11,6 +11,9 @@ services:
     environment:
       - OLLAMA_NUM_PARALLEL=1
       - OLLAMA_MAX_LOADED_MODELS=1
+
+    # ── GPU Nvidia (CUDA) ──────────────────────────────────────────
+    # Comente este bloco se não tiver GPU Nvidia
     deploy:
       resources:
         reservations:
@@ -18,7 +21,24 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
-  # Sem GPU nvidia? Comente o bloco "deploy" acima.
+
+    # ── GPU AMD (ROCm) ─────────────────────────────────────────────
+    # Descomente este bloco e comente o bloco Nvidia acima se tiver AMD
+    # Requer: ROCm instalado no host (https://rocm.docs.amd.com)
+    # devices:
+    #   - /dev/kfd:/dev/kfd
+    #   - /dev/dri:/dev/dri
+    # group_add:
+    #   - video
+    #   - render
+    # environment:
+    #   - HSA_OVERRIDE_GFX_VERSION=10.3.0   # ajuste para sua GPU (rdna2=10.3, rdna3=11.0)
+    #   - OLLAMA_NUM_PARALLEL=1
+    #   - OLLAMA_MAX_LOADED_MODELS=1
+
+    # ── CPU only ───────────────────────────────────────────────────
+    # Sem GPU? Comente todos os blocos acima e descomente:
+    # runtime: runc
 
   # ── Setup: baixa o modelo definido no .env ────────────────────────
   ollama-setup:
@@ -46,6 +66,7 @@ services:
       ollama-setup:
         condition: service_completed_successfully
     restart: "no"
+    user: "${DOCKER_UID:-1000}:${DOCKER_GID:-1000}"
     env_file: .env
     environment:
       - OLLAMA_HOST=http://ollama:11434

@@ -25,7 +25,8 @@ PROFILES = {
         ],
         "extensions": [".sol"],
         "ignore_dirs": {"artifacts", "cache", "out", "node_modules", ".git"},
-        "lang_label": "Solidity",
+        "lang_key": "javascript",
+    "lang_label": "Solidity",
         "prompt_focus": (
             "Audite este contrato inteligente com foco em:\n"
             "- Funções públicas/externas e seus modificadores de acesso\n"
@@ -38,7 +39,8 @@ PROFILES = {
         "triggers": ["package.json"],
         "extensions": [".js", ".ts", ".jsx", ".tsx"],
         "ignore_dirs": {"node_modules", "dist", ".next", "build", "coverage", ".git"},
-        "lang_label": "JavaScript/TypeScript",
+        "lang_key": "javascript",
+    "lang_label": "JavaScript/TypeScript",
         "prompt_focus": (
             "Documente este código JS/TS com foco em:\n"
             "- Funções e componentes exportados\n"
@@ -57,7 +59,8 @@ PROFILES = {
         ],
         "extensions": [".java"],
         "ignore_dirs": {"target", "build", "bin", ".gradle", ".mvn", ".git"},
-        "lang_label": "Java",
+        "lang_key": "java",
+    "lang_label": "Java",
         "prompt_focus": (
             "Documente este código Java com foco em:\n"
             "- Classes, interfaces e responsabilidades\n"
@@ -70,7 +73,8 @@ PROFILES = {
         "triggers": ["requirements.txt", "pyproject.toml", "setup.py", "Pipfile"],
         "extensions": [".py"],
         "ignore_dirs": {"__pycache__", ".venv", "venv", "dist", ".egg-info", ".git"},
-        "lang_label": "Python",
+        "lang_key": "python",
+    "lang_label": "Python",
         "prompt_focus": (
             "Documente este código Python com foco em:\n"
             "- Funções e classes principais\n"
@@ -83,7 +87,8 @@ PROFILES = {
         "triggers": ["Cargo.toml"],
         "extensions": [".rs"],
         "ignore_dirs": {"target", ".git"},
-        "lang_label": "Rust",
+        "lang_key": "rust",
+    "lang_label": "Rust",
         "prompt_focus": (
             "Documente este código Rust com foco em:\n"
             "- Structs, enums e traits definidos\n"
@@ -96,7 +101,8 @@ PROFILES = {
         "triggers": ["go.mod"],
         "extensions": [".go"],
         "ignore_dirs": {"vendor", ".git"},
-        "lang_label": "Go",
+        "lang_key": "go",
+    "lang_label": "Go",
         "prompt_focus": (
             "Documente este código Go com foco em:\n"
             "- Pacotes e funções exportadas\n"

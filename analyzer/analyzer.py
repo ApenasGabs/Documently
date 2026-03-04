@@ -1,6 +1,9 @@
 """
 Documently — Analyzer
-Comunicação com Ollama: chunks, análise de arquivos e geração de resumo.
+Fluxo semântico de 3 passos por arquivo:
+  1. Scan  → lista assinaturas de funções/classes
+  2. Deep  → analisa cada função individualmente
+  3. Synth → sintetiza as anotações em doc do arquivo
 """
 
 import os
@@ -9,7 +12,8 @@ import requests
 from pathlib import Path
 from datetime import datetime
 
-from logger import log_info, log_ok, log_warn, log_err, log_skip
+from logger    import log_info, log_ok, log_warn, log_err, log_skip
+from extractor import extract_functions, functions_to_scan_prompt, FunctionNode
 
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 MODEL       = os.getenv("OLLAMA_MODEL", "qwen2.5-coder:3b")
@@ -33,13 +37,12 @@ def wait_for_ollama(retries: int = 20, delay: int = 3):
 
 
 def check_model_available():
-    """Verifica se o modelo está disponível antes de começar."""
     try:
-        r = requests.get(f"{OLLAMA_HOST}/api/tags", timeout=5)
+        r      = requests.get(f"{OLLAMA_HOST}/api/tags", timeout=5)
         models = [m["name"] for m in r.json().get("models", [])]
         if not any(MODEL in m for m in models):
             raise RuntimeError(
-                f"Modelo '{MODEL}' não encontrado no Ollama. "
+                f"Modelo '{MODEL}' não encontrado. "
                 f"Disponíveis: {models}. "
                 f"Baixe com: docker exec documently-ollama-1 ollama pull {MODEL}"
             )
@@ -48,33 +51,52 @@ def check_model_available():
         raise RuntimeError(f"Não foi possível verificar modelos: {e}")
 
 
-def call_ollama(prompt: str) -> str:
-    response = requests.post(
-        f"{OLLAMA_HOST}/api/generate",
-        json={
-            "model": MODEL,
-            "prompt": prompt,
-            "stream": False,
-            "options": {
-                "num_ctx": 4096,
-                "temperature": 0.1,
-                "num_predict": 512,
+def call_ollama(prompt: str, num_predict: int = 1024) -> str:
+    """
+    Chama Ollama e detecta truncamento via done_reason == 'length'.
+    Se truncar, retenta com prompt reduzido e num_predict dobrado.
+    """
+    for attempt in range(2):
+        response = requests.post(
+            f"{OLLAMA_HOST}/api/generate",
+            json={
+                "model":  MODEL,
+                "prompt": prompt,
+                "stream": False,
+                "options": {
+                    "num_ctx":     4096,
+                    "temperature": 0.1,
+                    "num_predict": num_predict,
+                },
             },
-        },
-        timeout=120,
-    )
-    response.raise_for_status()
-    return response.json()["response"].strip()
+            timeout=180,
+        )
+        response.raise_for_status()
+        data      = response.json()
+        text      = data.get("response", "").strip()
+        truncated = data.get("done_reason") == "length"
+
+        if truncated and attempt == 0:
+            log_warn(f"resposta truncada — retentando com {num_predict * 2} tokens")
+            num_predict = min(num_predict * 2, 2048)
+            prompt      = prompt[: len(prompt) // 2] + "\n\n[prompt reduzido]\n\nContinue a documentação:"
+            continue
+
+        if truncated:
+            text += "\n\n> ⚠️ _Análise truncada — use um modelo maior ou reduza MAX_TOKENS_PER_CHUNK._"
+
+        return text
+
+    return text
 
 
-# ── Chunks ────────────────────────────────────────────────────────────
+# ── chunk_text (mantido para resumo e fallback) ───────────────────────
 
 def chunk_text(content: str, max_tokens: int = MAX_TOKENS) -> list[str]:
-    """Divide o conteúdo em chunks respeitando o limite de tokens estimado."""
     lines = content.splitlines(keepends=True)
     chunks, current, count = [], [], 0
     for line in lines:
-        t = len(line) // 4  # ~4 chars por token
+        t = len(line) // 4
         if count + t > max_tokens and current:
             chunks.append("".join(current))
             current, count = [line], t
@@ -89,60 +111,92 @@ def chunk_text(content: str, max_tokens: int = MAX_TOKENS) -> list[str]:
 # ── Árvore de arquivos ────────────────────────────────────────────────
 
 def build_tree(project_path: Path, profile: dict) -> str:
-    """Gera árvore de arquivos relevantes do projeto."""
     files = sorted([
         f.relative_to(project_path)
         for ext in profile["extensions"]
         for f in project_path.rglob(f"*{ext}")
         if not any(part in profile["ignore_dirs"] for part in f.parts)
     ])
-
-    # Monta árvore agrupando por pasta
-    tree = [f"{project_path.name}/"]
+    tree      = [f"{project_path.name}/"]
     seen_dirs: set = set()
     for f in files:
-        # Adiciona pastas intermediárias
         for i in range(len(f.parts) - 1):
-            dir_path = Path(*f.parts[:i+1])
+            dir_path = Path(*f.parts[: i + 1])
             if dir_path not in seen_dirs:
-                depth = i
-                tree.append(f"{'  ' * depth}├── {f.parts[i]}/")
+                tree.append(f"{'  ' * i}├── {f.parts[i]}/")
                 seen_dirs.add(dir_path)
-        # Adiciona o arquivo
         depth = len(f.parts) - 1
         tree.append(f"{'  ' * depth}└── {f.name}")
-
     return "\n".join(tree)
 
 
-# ── Análise ───────────────────────────────────────────────────────────
+# ── Fluxo semântico de 3 passos ───────────────────────────────────────
 
-def analyze_chunk(chunk: str, context_summary: str, filename: str,
-                  chunk_idx: int, total: int, profile: dict) -> str:
-    ext = Path(filename).suffix
-    prompt = f"""Você é um analisador de código especialista em {profile['lang_label']}.
+def _step_scan(nodes: list[FunctionNode], filename: str, lang_label: str) -> str:
+    """
+    Passo 1 — Scan rápido: lista assinaturas e pede ao modelo
+    uma linha de descrição para cada função.
+    """
+    scan_list = functions_to_scan_prompt(nodes, filename)
+    prompt = (
+        f"Você é um especialista em {lang_label}.\n\n"
+        f"{scan_list}\n\n"
+        f"Para cada item acima, escreva UMA linha descrevendo o que ela faz. "
+        f"Formato: `nome` — descrição. Seja conciso."
+    )
+    return call_ollama(prompt, num_predict=512)
 
-Contexto já analisado (resumo): {context_summary[-600:] if context_summary else "Nenhum — este é o início do arquivo."}
 
-Arquivo: {filename}  (chunk {chunk_idx + 1} de {total})
+def _step_deep(node: FunctionNode, context: str, lang_label: str) -> str:
+    """
+    Passo 2 — Deep dive: analisa o corpo de uma função individualmente.
+    """
+    num_predict = max(256, min(len(node.body) // 4, 1024))
+    prompt = (
+        f"Você é um especialista em {lang_label}.\n\n"
+        f"Contexto do arquivo até agora:\n{context[-400:]}\n\n"
+        f"Analise apenas esta {'classe' if node.kind == 'class' else 'função'}:\n\n"
+        f"```\n{node.body[:3000]}\n```\n\n"
+        f"Documente de forma concisa (máx 150 palavras):\n"
+        f"- O que faz\n"
+        f"- Parâmetros e retorno (se houver)\n"
+        f"- Efeitos colaterais ou chamadas externas relevantes"
+    )
+    return call_ollama(prompt, num_predict=num_predict)
 
-```{ext.lstrip('.')}
-{chunk}
-```
 
-{profile['prompt_focus']}
-
-Responda em português, de forma concisa (máx 300 palavras)."""
-    return call_ollama(prompt)
+def _step_synth(annotations: list[dict], filename: str,
+                lang_label: str, profile: dict) -> str:
+    """
+    Passo 3 — Síntese: gera o doc completo do arquivo a partir das anotações.
+    """
+    annot_text = "\n\n".join([
+        f"### `{a['name']}` ({a['kind']})\n{a['doc']}"
+        for a in annotations
+    ])
+    prompt = (
+        f"Você é um especialista em {lang_label}.\n\n"
+        f"Abaixo estão as anotações individuais de cada função/classe "
+        f"do arquivo `{filename}`:\n\n"
+        f"{annot_text[:5000]}\n\n"
+        f"{profile['prompt_focus']}\n\n"
+        f"Com base nas anotações acima, gere a documentação completa do arquivo. "
+        f"Inclua: propósito geral, funções exportadas, dependências externas, "
+        f"efeitos colaterais e pontos de atenção. Máx 400 palavras."
+    )
+    return call_ollama(prompt, num_predict=1024)
 
 
 def analyze_file(filepath: Path, project_path: Path, context_window: list,
                  status_files: dict, profile: dict, project: str,
                  docs_dir: Path) -> dict | None:
-    """Analisa um arquivo inteiro chunk a chunk. Salva doc individual."""
-    rel         = str(filepath)
-    fname       = filepath.name
-    file_status = status_files.get(rel, {"chunks_done": 0, "total_chunks": 0, "done": False})
+    """
+    Analisa um arquivo usando o fluxo semântico de 3 passos.
+    Fallback para chunk_text se tree-sitter não encontrar nenhuma função.
+    """
+    rel   = str(filepath)
+    fname = filepath.name
+    file_status = status_files.get(rel, {"done": False, "steps": {}})
 
     try:
         content = filepath.read_text(errors="replace")
@@ -150,42 +204,74 @@ def analyze_file(filepath: Path, project_path: Path, context_window: list,
         log_err(f"não foi possível ler: {e}", project, fname)
         return None
 
-    chunks = chunk_text(content)
-    total  = len(chunks)
-    file_status["total_chunks"] = total
-    status_files[rel] = file_status
-
     if file_status.get("done"):
         log_skip("já analisado anteriormente", project, fname)
         return None
 
-    log_info(f"iniciando — {total} chunk(s)", project, fname)
+    # Detecta lang_key a partir do perfil
+    lang_key   = profile.get("lang_key", "javascript")
+    lang_label = profile["lang_label"]
+
+    # ── Extrai funções ────────────────────────────────────────────────
+    nodes = extract_functions(content, lang_key, fname)
+
+    doc_parts    = [f"# 📄 `{fname}`\n\n_Perfil: {lang_label}_\n"]
+    full_analysis = []
     context_summary = "\n".join(context_window[-5:])
-    doc_parts       = [f"# 📄 `{fname}`\n\n_Perfil: {profile['lang_label']}_\n"]
-    full_analysis   = []
 
-    for i, chunk in enumerate(chunks):
-        if i < file_status["chunks_done"]:
-            log_skip(f"chunk {i+1}/{total} já processado", project, fname)
-            continue
+    if not nodes:
+        # Fallback: arquivo sem funções detectadas (config, types, etc.)
+        log_info(f"sem funções detectadas — análise direta", project, fname)
+        chunks = chunk_text(content)
+        for i, chunk in enumerate(chunks):
+            log_info(f"chunk {i+1}/{len(chunks)} → Ollama...", project, fname)
+            num_predict = max(512, min(len(chunk) // 4 // 2, 2048))
+            prompt = (
+                f"Você é um especialista em {lang_label}.\n\n"
+                f"Contexto: {context_summary[-400:]}\n\n"
+                f"Arquivo: {fname}\n\n```\n{chunk}\n```\n\n"
+                f"{profile['prompt_focus']}\n\nMáx 300 palavras."
+            )
+            analysis = call_ollama(prompt, num_predict=num_predict)
+            doc_parts.append(f"## Análise\n\n{analysis}\n")
+            full_analysis.append(analysis)
+    else:
+        log_info(f"{len(nodes)} função(ões)/classe(s) encontrada(s)", project, fname)
 
-        log_info(f"chunk {i+1}/{total} → enviando para Ollama...", project, fname)
-        start    = time.time()
-        analysis = analyze_chunk(chunk, context_summary, fname, i, total, profile)
-        elapsed  = round(time.time() - start, 1)
-        log_ok(f"chunk {i+1}/{total} concluído em {elapsed}s", project, fname)
+        # ── Passo 1: Scan ─────────────────────────────────────────────
+        log_info("passo 1/3 — scan de assinaturas", project, fname)
+        scan_result = _step_scan(nodes, fname, lang_label)
+        doc_parts.append(f"## Visão Geral das Funções\n\n{scan_result}\n")
 
-        doc_parts.append(f"## Chunk {i+1}/{total}\n\n{analysis}\n")
-        full_analysis.append(analysis)
+        # ── Passo 2: Deep dive por função ─────────────────────────────
+        log_info("passo 2/3 — análise individual", project, fname)
+        annotations = []
+        running_ctx = context_summary
 
-        context_window.append(f"[{fname} c{i+1}]: {analysis[:200]}")
+        for node in nodes:
+            log_info(f"  analisando `{node.name}` (L{node.start_line}–{node.end_line})", project, fname)
+            doc = _step_deep(node, running_ctx, lang_label)
+            annotations.append({"name": node.name, "kind": node.kind, "doc": doc})
+            running_ctx += f"\n[{node.name}]: {doc[:150]}"
+
+        annot_section = "\n\n".join([
+            f"### `{a['name']}` ({a['kind']})\n{a['doc']}"
+            for a in annotations
+        ])
+        doc_parts.append(f"## Documentação por Função\n\n{annot_section}\n")
+
+        # ── Passo 3: Síntese ──────────────────────────────────────────
+        log_info("passo 3/3 — síntese do arquivo", project, fname)
+        synth = _step_synth(annotations, fname, lang_label, profile)
+        doc_parts.append(f"## Resumo do Arquivo\n\n{synth}\n")
+        full_analysis = [a["doc"] for a in annotations] + [synth]
+
+        # Atualiza janela de contexto com síntese
+        context_window.append(f"[{fname}]: {synth[:200]}")
         if len(context_window) > 20:
             context_window.pop(0)
 
-        file_status["chunks_done"] = i + 1
-        status_files[rel] = file_status
-
-    # Salva doc individual espelhando estrutura de pastas
+    # ── Salva doc espelhando estrutura de pastas ──────────────────────
     relative_path = filepath.relative_to(project_path)
     doc_path      = docs_dir / project / relative_path.with_suffix(".md")
     doc_path.parent.mkdir(parents=True, exist_ok=True)
@@ -199,54 +285,38 @@ def analyze_file(filepath: Path, project_path: Path, context_window: list,
     return {"path": str(relative_path), "analysis": " ".join(full_analysis)}
 
 
+# ── Resumo do projeto ─────────────────────────────────────────────────
+
 def generate_summary(project_name: str, project_path: Path, profile: dict,
                      file_docs: list[dict], elapsed_min: float) -> str:
-    """Gera o _resumo.md consolidando toda a análise do projeto."""
     log_info("gerando resumo geral...", project_name)
 
     tree    = build_tree(project_path, profile)
     context = "\n".join([f"- {d['path']}: {d['analysis'][:300]}" for d in file_docs])
 
-    prompt = f"""Você é um arquiteto de software sênior. Analise os dados abaixo sobre o projeto "{project_name}" e gere um resumo executivo completo.
+    prompt = (
+        f"Você é um arquiteto de software sênior.\n\n"
+        f"Projeto: {project_name}\n"
+        f"Perfil: {profile['lang_label']}\n"
+        f"Arquivos analisados: {len(file_docs)}\n"
+        f"Tempo: {elapsed_min:.1f} min\n\n"
+        f"Estrutura:\n```\n{tree}\n```\n\n"
+        f"Resumo por arquivo:\n{context[:5000]}\n\n"
+        f"Gere um relatório técnico em português com:\n"
+        f"## Visão Geral\n"
+        f"## Arquitetura\n"
+        f"## Arquivos por Responsabilidade\n"
+        f"## Dependências Principais\n"
+        f"## Pontos de Atenção\n\n"
+        f"Seja objetivo e técnico."
+    )
 
-Perfil detectado: {profile['lang_label']}
-Total de arquivos analisados: {len(file_docs)}
-Tempo de análise: {elapsed_min:.1f} minutos
-
-Estrutura do projeto:
-```
-{tree}
-```
-
-Resumo por arquivo:
-{context[:5000]}
-
-Gere um relatório em português com as seguintes seções:
-
-## Visão Geral
-[Descreva o propósito do projeto em 2-3 frases]
-
-## Arquitetura
-[Como o projeto está organizado, padrões identificados]
-
-## Arquivos por Responsabilidade
-[Agrupe os arquivos por função: API, componentes, hooks, utils, etc]
-
-## Dependências Principais
-[Liste as bibliotecas externas identificadas]
-
-## Pontos de Atenção
-[Riscos, más práticas ou pontos que merecem revisão]
-
-Seja objetivo e técnico."""
-
-    summary = call_ollama(prompt)
+    summary = call_ollama(prompt, num_predict=1500)
     header  = (
         f"# 📋 Resumo: `{project_name}`\n\n"
         f"_Gerado em {datetime.now().strftime('%d/%m/%Y %H:%M')} · "
         f"Perfil: **{profile['lang_label']}** · "
-        f"{len(file_docs)} arquivo(s) · "
-        f"{elapsed_min:.1f} min_\n\n"
+        f"{len(file_docs)} arquivo(s) · {elapsed_min:.1f} min_\n\n"
         f"## 🗂 Estrutura\n\n```\n{tree}\n```\n\n---\n\n"
     )
     return header + summary
