@@ -13,12 +13,8 @@ import subprocess
 from pathlib import Path
 
 # ── Cores ANSI ────────────────────────────────────────────────────────
-# Windows 10+ suporta ANSI no terminal moderno (Windows Terminal, PowerShell 7+)
-# Para cmd.exe antigo, desativa as cores graciosamente
-
 def supports_color() -> bool:
     if platform.system() == "Windows":
-        # Tenta habilitar ANSI no Windows
         try:
             import ctypes
             kernel32 = ctypes.windll.kernel32
@@ -31,45 +27,37 @@ def supports_color() -> bool:
 USE_COLOR = supports_color()
 
 class C:
-    """Cores para o terminal."""
     RESET  = "\033[0m"   if USE_COLOR else ""
     BOLD   = "\033[1m"   if USE_COLOR else ""
     DIM    = "\033[2m"   if USE_COLOR else ""
-
-    # Texto
     WHITE  = "\033[97m"  if USE_COLOR else ""
     GRAY   = "\033[90m"  if USE_COLOR else ""
-
-    # Status
     GREEN  = "\033[92m"  if USE_COLOR else ""
     YELLOW = "\033[93m"  if USE_COLOR else ""
     RED    = "\033[91m"  if USE_COLOR else ""
-    BLUE   = "\033[94m"  if USE_COLOR else ""
     CYAN   = "\033[96m"  if USE_COLOR else ""
     PURPLE = "\033[95m"  if USE_COLOR else ""
 
-def success(msg):  print(f"{C.GREEN}  ✅ {msg}{C.RESET}")
-def warn(msg):     print(f"{C.YELLOW}  ⚠️  {msg}{C.RESET}")
-def error(msg):    print(f"{C.RED}  ❌ {msg}{C.RESET}")
-def info(msg):     print(f"{C.CYAN}  ℹ️  {msg}{C.RESET}")
-def step(msg):     print(f"\n{C.BOLD}{C.WHITE}{msg}{C.RESET}")
-def dim(msg):      print(f"{C.GRAY}{msg}{C.RESET}")
-def highlight(msg):print(f"{C.PURPLE}{C.BOLD}{msg}{C.RESET}")
+def success(msg):   print(f"{C.GREEN}  ✅ {msg}{C.RESET}")
+def warn(msg):      print(f"{C.YELLOW}  ⚠️  {msg}{C.RESET}")
+def error(msg):     print(f"{C.RED}  ❌ {msg}{C.RESET}")
+def info(msg):      print(f"{C.CYAN}  ℹ️  {msg}{C.RESET}")
+def step(msg):      print(f"\n{C.BOLD}{C.WHITE}{msg}{C.RESET}")
+def dim(msg):       print(f"{C.GRAY}{msg}{C.RESET}")
+def highlight(msg): print(f"{C.PURPLE}{C.BOLD}{msg}{C.RESET}")
 
 
 # ── Detecção de hardware ──────────────────────────────────────────────
 
 def get_ram_gb() -> int:
-    """Retorna RAM total em GB."""
     system = platform.system()
     try:
         if system == "Linux":
             with open("/proc/meminfo") as f:
                 for line in f:
                     if line.startswith("MemTotal"):
-                        kb = int(line.split()[1])
-                        return kb // 1024 // 1024
-        elif system == "Darwin":  # Mac
+                        return int(line.split()[1]) // 1024 // 1024
+        elif system == "Darwin":
             out = subprocess.check_output(["sysctl", "-n", "hw.memsize"]).decode()
             return int(out.strip()) // 1024 // 1024 // 1024
         elif system == "Windows":
@@ -87,7 +75,6 @@ def get_ram_gb() -> int:
 
 
 def get_gpu_info() -> dict:
-    """Retorna info da GPU Nvidia via nvidia-smi."""
     if not shutil.which("nvidia-smi"):
         return {"found": False}
     try:
@@ -98,75 +85,87 @@ def get_gpu_info() -> dict:
         if not out:
             return {"found": False}
         parts = out.split(",")
-        name = parts[0].strip()
-        vram_mb = int(parts[1].strip())
-        return {"found": True, "name": name, "vram_gb": round(vram_mb / 1024, 1)}
+        return {
+            "found": True,
+            "name": parts[0].strip(),
+            "vram_gb": round(int(parts[1].strip()) / 1024, 1)
+        }
     except Exception:
         return {"found": False}
 
 
 # ── Modelos disponíveis ───────────────────────────────────────────────
+# Nomes verificados no registry do Ollama (ollama.com/library)
 
 MODELS = [
     {
         "id": "qwen2.5-coder:3b",
         "label": "Qwen 2.5 Coder 3B",
-        "size_gb": 2.0,
-        "min_vram": 0,    # roda em CPU também
+        "size_gb": 1.9,
+        "min_vram": 0,
         "min_ram": 8,
         "quality": "boa",
         "speed": "rápida",
-        "best_for": "uso geral, máquinas modestas",
+        "best_for": "uso geral, máquinas modestas, CPU ok",
     },
     {
-        "id": "deepseek-coder:6.7b-q4_K_M",
-        "label": "DeepSeek Coder 6.7B (q4)",
-        "size_gb": 4.0,
+        "id": "qwen2.5-coder:7b",
+        "label": "Qwen 2.5 Coder 7B",
+        "size_gb": 4.7,
         "min_vram": 4,
         "min_ram": 12,
         "quality": "ótima",
         "speed": "média",
-        "best_for": "análise detalhada, contratos Solidity",
+        "best_for": "melhor custo-benefício, JS/TS/Python",
     },
     {
-        "id": "codellama:7b-q4_K_M",
-        "label": "Code Llama 7B (q4)",
-        "size_gb": 4.1,
-        "min_vram": 4,
-        "min_ram": 12,
-        "quality": "boa",
+        "id": "deepseek-coder-v2:16b",
+        "label": "DeepSeek Coder V2 16B",
+        "size_gb": 8.9,
+        "min_vram": 8,
+        "min_ram": 16,
+        "quality": "excelente",
         "speed": "média",
-        "best_for": "Java, Python, código geral",
+        "best_for": "análise detalhada, contratos Solidity, Java",
     },
     {
-        "id": "codellama:13b-q4_K_M",
-        "label": "Code Llama 13B (q4)",
-        "size_gb": 7.9,
+        "id": "qwen2.5-coder:14b",
+        "label": "Qwen 2.5 Coder 14B",
+        "size_gb": 9.0,
         "min_vram": 8,
         "min_ram": 16,
         "quality": "excelente",
         "speed": "lenta",
-        "best_for": "projetos grandes, máxima qualidade",
+        "best_for": "projetos grandes, múltiplas linguagens",
+    },
+    {
+        "id": "qwen2.5-coder:32b",
+        "label": "Qwen 2.5 Coder 32B",
+        "size_gb": 19.0,
+        "min_vram": 20,
+        "min_ram": 32,
+        "quality": "state-of-the-art",
+        "speed": "lenta",
+        "best_for": "máxima qualidade, GPUs de alto desempenho",
     },
 ]
 
 
 def recommend_model(ram_gb: int, gpu: dict) -> dict:
-    """Escolhe o melhor modelo para o hardware detectado."""
     vram = gpu["vram_gb"] if gpu["found"] else 0
-
     candidates = [
         m for m in MODELS
-        if ram_gb >= m["min_ram"] and (vram >= m["min_vram"] or m["min_vram"] == 0)
+        if ram_gb >= m["min_ram"] and (
+            (gpu["found"] and vram >= m["min_vram"])
+            or (not gpu["found"] and m["min_vram"] == 0)
+        )
     ]
-    # Prefere o mais capaz dentro do hardware disponível
     return candidates[-1] if candidates else MODELS[0]
 
 
 # ── Interface interativa ──────────────────────────────────────────────
 
 def ask(prompt: str, default: str = "") -> str:
-    """Pergunta com valor padrão destacado."""
     default_hint = f"{C.DIM} [{default}]{C.RESET}" if default else ""
     try:
         answer = input(f"{C.BOLD}{C.WHITE}  {prompt}{default_hint}: {C.RESET}").strip()
@@ -183,7 +182,6 @@ def ask_yes_no(prompt: str, default: bool = True) -> bool:
 
 
 def choose_model(current: dict) -> dict:
-    """Menu para o usuário escolher outro modelo."""
     print(f"\n{C.BOLD}  Modelos disponíveis:{C.RESET}\n")
     for i, m in enumerate(MODELS):
         marker = f"{C.GREEN}▶ {C.RESET}" if m["id"] == current["id"] else "  "
@@ -195,9 +193,10 @@ def choose_model(current: dict) -> dict:
             f"Velocidade: {m['speed']}{C.RESET}\n"
             f"      {C.DIM}Ideal para: {m['best_for']}{C.RESET}\n"
         )
-
-    choice = ask(f"Escolha [1-{len(MODELS)}] ou Enter para manter o recomendado",
-                 str(MODELS.index(current) + 1))
+    choice = ask(
+        f"Escolha [1-{len(MODELS)}] ou Enter para manter o recomendado",
+        str(MODELS.index(current) + 1)
+    )
     try:
         idx = int(choice) - 1
         if 0 <= idx < len(MODELS):
@@ -209,13 +208,10 @@ def choose_model(current: dict) -> dict:
 
 # ── Geração do .env ───────────────────────────────────────────────────
 
-def generate_env(model: dict, gpu: dict, ram_gb: int) -> dict:
-    """Monta o dicionário de configurações."""
+def generate_env(model: dict, gpu: dict) -> dict:
     gpu_layers = 0
     if gpu["found"]:
-        # Estima layers com base na VRAM (aprox 200MB por layer)
         gpu_layers = min(35, int((gpu["vram_gb"] * 1024) / 200))
-
     return {
         "OLLAMA_MODEL": model["id"],
         "MAX_TOKENS_PER_CHUNK": "3000",
@@ -241,7 +237,6 @@ def write_env(config: dict):
 def main():
     os.system("cls" if platform.system() == "Windows" else "clear")
 
-    # Header
     print(f"\n{C.BOLD}{C.PURPLE}{'─' * 50}{C.RESET}")
     highlight("   🔍 Documently — Setup")
     print(f"{C.BOLD}{C.PURPLE}{'─' * 50}{C.RESET}\n")
@@ -265,8 +260,8 @@ def main():
             f"com {C.CYAN}{gpu['vram_gb']} GB{C.RESET} de VRAM"
         )
     else:
-        warn("Nenhuma GPU Nvidia detectada — o Ollama usará a CPU.")
-        if ask_yes_no("Você tem GPU Nvidia mas o nvidia-smi não foi encontrado?", default=False):
+        warn("Nenhuma GPU Nvidia detectada — Ollama usará a CPU.")
+        if ask_yes_no("Você tem GPU Nvidia mas nvidia-smi não foi encontrado?", default=False):
             vram = float(ask("Quantos GB de VRAM?", "4"))
             name = ask("Nome da GPU (opcional)", "Nvidia GPU")
             gpu = {"found": True, "name": name, "vram_gb": vram}
@@ -293,7 +288,7 @@ def main():
     # ── 3. Gera .env ──────────────────────────────────────────────────
     step("3 / 4  Gerando .env...")
 
-    config = generate_env(chosen, gpu, ram_gb)
+    config = generate_env(chosen, gpu)
 
     print(f"\n  {C.DIM}{'─' * 44}{C.RESET}")
     for key, value in config.items():
@@ -307,15 +302,16 @@ def main():
     step("4 / 4  Tudo pronto!")
 
     info(f"Coloque seus projetos em {C.WHITE}./projects/{C.RESET}")
-    info(f"A documentação será gerada em {C.WHITE}./docs/{C.RESET}")
+    info(f"Documentação gerada em   {C.WHITE}./docs/<projeto>/{C.RESET}")
+    info(f"Resumo geral em          {C.WHITE}./docs/<projeto>/_resumo.md{C.RESET}")
 
     print()
     if ask_yes_no("Rodar agora? (docker compose up)", default=True):
         print()
         info("Iniciando... (pressione Ctrl+C para parar)\n")
         try:
-          subprocess.run(["docker", "compose", "up"], check=True)
-        except subprocess.CalledProcessError as e:
+            subprocess.run(["docker", "compose", "up"], check=True)
+        except subprocess.CalledProcessError:
             print()
             error("Docker retornou um erro. Tente rodar manualmente:")
             info(f"  docker compose down && docker compose up")

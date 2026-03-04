@@ -15,15 +15,21 @@ documently/
 │   └── profiles.py           ← perfis por linguagem: triggers, extensões, prompts, ignore_dirs
 │
 ├── projects/                 ← coloque seus projetos aqui (qualquer nome)
-│   ├── meu-contrato/         ← ex: projeto Solidity (tem hardhat.config.js → perfil solidity)
-│   └── outro-repo/           ← ex: projeto Java (tem pom.xml → perfil java)
+│   ├── meu-contrato/
+│   └── outro-repo/
 │
 ├── docs/                     ← documentação gerada automaticamente (auto-criada)
-│   ├── meu-contrato.md
-│   └── outro-repo.md
+│   ├── meu-contrato/
+│   │   ├── _resumo.md        ← visão geral do projeto gerada no final
+│   │   ├── src/
+│   │   │   └── index.md      ← espelha a estrutura do projeto
+│   │   └── contracts/
+│   │       └── Token.md
+│   └── outro-repo/
+│       └── _resumo.md
 │
 └── status/                   ← progresso de cada projeto (auto-criado)
-    ├── meu-contrato.json     ← chunks processados, status por arquivo, perfil detectado
+    ├── meu-contrato.json
     └── outro-repo.json
 ```
 
@@ -58,11 +64,11 @@ O setup detecta seu hardware automaticamente, recomenda o melhor modelo e gera o
 ```
 1 / 4  Detectando hardware...
   ✅ RAM detectada: 16 GB
-  ✅ GPU detectada: NVIDIA RTX 3060 com 4.0 GB de VRAM
+  ✅ GPU detectada: NVIDIA RTX 3060 com 6.0 GB de VRAM
 
 2 / 4  Recomendando modelo...
-  ▶ DeepSeek Coder 6.7B (q4)
-    Tamanho: ~4GB | Qualidade: ótima | Velocidade: média
+  ▶ DeepSeek Coder V2 16B
+    Tamanho: ~8.9GB | Qualidade: excelente | Velocidade: média
 
   Usar este modelo? (S/n):
 ```
@@ -70,7 +76,6 @@ O setup detecta seu hardware automaticamente, recomenda o melhor modelo e gera o
 ### 3. Clone seus projetos dentro de `projects/`
 
 ```bash
-# O nome da pasta vira o nome da documentação gerada — use nomes descritivos
 git clone https://github.com/user/meu-contrato  ./projects/meu-contrato
 git clone https://github.com/user/outro-repo    ./projects/outro-repo
 ```
@@ -80,7 +85,7 @@ git clone https://github.com/user/outro-repo    ./projects/outro-repo
 ### 4. Rode
 
 ```bash
-# Primeira vez (baixa o modelo, pode demorar conforme o tamanho)
+# Primeira vez (baixa o modelo, pode demorar)
 docker compose up
 
 # Próximas vezes (retoma de onde parou)
@@ -93,16 +98,16 @@ docker compose up -d && docker compose logs -f analyzer
 ### 5. Acompanhe o progresso
 
 ```bash
-# Status em tempo real de um projeto
+# Status em tempo real
 watch -n 2 cat status/meu-contrato.json
 
-# Ver a documentação sendo gerada
-tail -f docs/meu-contrato.md
+# Ver resumo sendo gerado
+tail -f docs/meu-contrato/_resumo.md
 ```
 
 ## 🔎 Detecção automática de linguagem
 
-O analisador identifica o tipo de projeto pelos arquivos de configuração presentes e aplica um prompt especializado para cada linguagem:
+O analisador identifica o tipo de projeto pelos arquivos de configuração e aplica prompts especializados:
 
 | Arquivo detectado | Perfil | Foco da análise |
 |---|---|---|
@@ -114,34 +119,51 @@ O analisador identifica o tipo de projeto pelos arquivos de configuração prese
 | `go.mod` | Go | Pacotes, goroutines, tratamento de erros |
 | _(nenhum)_ | Fallback | Análise geral com extensões do `.env` |
 
-## ⚙️ Configurações (geradas pelo setup no `.env`)
+## 🤖 Modelos recomendados por hardware
 
-| Variável | Descrição |
-|---|---|
-| `OLLAMA_MODEL` | Modelo a usar |
-| `MAX_TOKENS_PER_CHUNK` | Tamanho dos chunks de análise |
-| `EXTENSIONS` | Extensões analisadas no modo fallback |
-| `OLLAMA_NUM_GPU_LAYERS` | Camadas na GPU (0 = CPU only) |
+| Modelo | Tamanho | VRAM mínima | RAM mínima | Qualidade | Velocidade |
+|---|---|---|---|---|---|
+| `qwen2.5-coder:3b` | ~1.9GB | CPU ok | 8GB | boa | rápida |
+| `qwen2.5-coder:7b` | ~4.7GB | 4GB | 12GB | ótima | média |
+| `deepseek-coder-v2:16b` | ~8.9GB | 8GB | 16GB | excelente | média |
+| `qwen2.5-coder:14b` | ~9.0GB | 8GB | 16GB | excelente | lenta |
+| `qwen2.5-coder:32b` | ~19GB | 20GB | 32GB | state-of-the-art | lenta |
 
-Para reconfigurar, basta rodar `python3 setup.py` novamente.
+> O `setup.py` detecta seu hardware e escolhe automaticamente o melhor modelo disponível.  
+> Para reconfigurar: `python3 setup.py`
 
-## 🤖 Modelos disponíveis
+## 📄 Documentação gerada
 
-| Modelo | Tamanho | VRAM mínima | Qualidade | Velocidade |
-|---|---|---|---|---|
-| `qwen2.5-coder:3b` | ~2GB | CPU ok | boa | rápida |
-| `deepseek-coder:6.7b-q4_K_M` | ~4GB | 4GB | ótima | média |
-| `codellama:7b-q4_K_M` | ~4GB | 4GB | boa | média |
-| `codellama:13b-q4_K_M` | ~8GB | 8GB | excelente | lenta |
+Cada projeto gera uma pasta espelhando sua estrutura:
+
+```
+docs/querocasa/
+├── _resumo.md              ← resumo executivo gerado no final
+├── api/
+│   ├── server.md
+│   └── routes/
+│       └── geolocations.md
+└── src/
+    ├── App.md
+    └── components/
+        └── Map.md
+```
+
+O `_resumo.md` consolida toda a análise em um relatório executivo com:
+- Visão geral do projeto
+- Arquitetura e padrões identificados
+- Arquivos agrupados por responsabilidade
+- Dependências principais
+- Pontos de atenção e riscos
 
 ## 🔄 Retomada automática
 
 Se o processo for interrompido, basta rodar `docker compose up analyzer` novamente.
-O progresso de cada arquivo é salvo em `status/<projeto>.json` e o loop continua exatamente de onde parou.
+O progresso é salvo em `status/<projeto>.json` por arquivo e chunk — o loop retoma exatamente de onde parou.
 
-Para forçar uma re-análise completa de um projeto:
+Para forçar re-análise completa de um projeto:
 ```bash
-rm status/meu-contrato.json
+rm -rf status/meu-contrato.json docs/meu-contrato/
 ```
 
 ## 📊 Formato do arquivo de status
@@ -151,12 +173,13 @@ rm status/meu-contrato.json
   "project": "meu-contrato",
   "profile": "Solidity",
   "started_at": "2024-01-15T10:30:00",
-  "finished_at": null,
+  "finished_at": "2024-01-15T10:42:00",
   "files": {
     "/projects/meu-contrato/contracts/Token.sol": {
       "chunks_done": 2,
-      "total_chunks": 3,
-      "done": false
+      "total_chunks": 2,
+      "done": true,
+      "doc_path": "/output/docs/meu-contrato/contracts/Token.md"
     }
   }
 }
@@ -176,4 +199,5 @@ rm status/meu-contrato.json
 
 ## 💡 Sem GPU?
 
-O setup detecta isso automaticamente e configura o Ollama para rodar via CPU. Funciona normalmente com 16GB de RAM, apenas mais lento.
+O setup detecta isso automaticamente e configura o Ollama para rodar via CPU.  
+Funciona com 8GB+ de RAM usando o modelo `qwen2.5-coder:3b`, apenas mais lento.
