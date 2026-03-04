@@ -131,7 +131,56 @@ def get_gpu_info() -> dict:
         except Exception:
             pass
 
-    # ── WMI (Nvidia ou AMD sem nvidia-smi) ───────────────────────────
+    # ── DXGI via PowerShell (mais preciso que WMI para VRAM > 4GB) ──
+    # WMI/AdapterRAM é limitado a 32 bits (~4GB máx) — bug histórico do Windows
+    # DXGI retorna DedicatedVideoMemory corretamente para qualquer tamanho
+    try:
+        ps_script = (
+            "Add-Type -TypeDefinition '"
+            "using System; using System.Runtime.InteropServices; "
+            "[Guid(\"770aae78-f26f-4dba-a829-253c83d1b387\")] "
+            "public interface IDXGIFactory {} "
+            "public class DXGI { "
+            "[DllImport(\"dxgi.dll\")] public static extern int CreateDXGIFactory(ref Guid g, out IntPtr f); }"
+            "'; "
+            # Abordagem mais simples: usa Get-WmiObject com CurrentBitsPerPixel para filtrar
+            # e depois registry para VRAM real
+            "$gpus = Get-ItemProperty -Path 'HKLM:\\SYSTEM\\ControlSet001\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}\\0*' "
+            "-ErrorAction SilentlyContinue | "
+            "Where-Object { $_.DriverDesc -and $_.HardwareInformation_MemorySize } | "
+            "Select-Object DriverDesc, HardwareInformation_MemorySize; "
+            "foreach ($g in $gpus) { "
+            "  $mb = [math]::Round($g.HardwareInformation_MemorySize / 1MB); "
+            "  Write-Output "$($g.DriverDesc)|$mb" "
+            "}"
+        )
+        out = subprocess.check_output(
+            ["powershell", "-NoProfile", "-Command", ps_script],
+            stderr=subprocess.DEVNULL, timeout=10
+        ).decode(errors="ignore").strip()
+
+        for line in out.splitlines():
+            line = line.strip()
+            if "|" not in line:
+                continue
+            name, mb_str = line.rsplit("|", 1)
+            name     = name.strip()
+            name_low = name.lower()
+            try:
+                vram_gb = round(int(mb_str.strip()) / 1024, 1)
+            except ValueError:
+                continue
+            if vram_gb < 0.5:
+                continue
+            if "nvidia" in name_low or "geforce" in name_low or "quadro" in name_low:
+                return {"found": True, "vendor": "nvidia", "name": name, "vram_gb": vram_gb}
+            elif "amd" in name_low or "radeon" in name_low or "rx " in name_low:
+                return {"found": True, "vendor": "amd", "name": name, "vram_gb": vram_gb}
+
+    except Exception:
+        pass
+
+    # ── WMI fallback (limitado a 4GB, melhor que nada) ────────────────
     try:
         out = subprocess.check_output(
             ["wmic", "path", "win32_VideoController",
@@ -147,10 +196,12 @@ def get_gpu_info() -> dict:
             name_low = name.lower()
             if vram_gb < 0.5:
                 continue
-            if "nvidia" in name_low:
-                return {"found": True, "vendor": "nvidia", "name": name, "vram_gb": vram_gb}
+            if "nvidia" in name_low or "geforce" in name_low:
+                return {"found": True, "vendor": "nvidia", "name": name, "vram_gb": vram_gb,
+                        "_vram_note": "WMI (pode estar truncado a 4GB)"}
             elif "amd" in name_low or "radeon" in name_low:
-                return {"found": True, "vendor": "amd", "name": name, "vram_gb": vram_gb}
+                return {"found": True, "vendor": "amd", "name": name, "vram_gb": vram_gb,
+                        "_vram_note": "WMI (pode estar truncado a 4GB)"}
     except Exception:
         pass
 
@@ -158,15 +209,31 @@ def get_gpu_info() -> dict:
 
 
 def recommend_model(ram_gb: int, gpu: dict) -> dict:
-    vram = gpu["vram_gb"] if gpu["found"] else 0
-    candidates = [
-        m for m in MODELS
-        if ram_gb >= m["min_ram"] and (
-            (gpu["found"] and vram >= m["min_vram"])
-            or (not gpu["found"] and m["min_vram"] == 0)
-        )
-    ]
-    return candidates[-1] if candidates else MODELS[0]
+    vram       = gpu["vram_gb"] if gpu["found"] else 0
+    candidates = []
+
+    for m in MODELS:
+        if ram_gb < m["min_ram"]:
+            continue
+        if not gpu["found"]:
+            if m["min_vram"] == 0:
+                candidates.append((m, "cpu"))
+            continue
+        if vram >= m["min_vram"]:
+            candidates.append((m, "gpu"))
+        elif ram_gb >= m["min_ram"] + m["min_vram"]:
+            candidates.append((m, "hybrid"))
+
+    if not candidates:
+        return MODELS[0]
+
+    def score(item):
+        m, mode = item
+        return ({"gpu": 2, "hybrid": 1, "cpu": 0}[mode], m["size_gb"])
+
+    best_model, best_mode = max(candidates, key=score)
+    best_model["_mode"] = best_mode
+    return best_model
 
 
 # ── Ollama ────────────────────────────────────────────────────────────
@@ -319,12 +386,16 @@ def install_dependencies():
 
 # ── .env.windows ──────────────────────────────────────────────────────
 
-def write_windows_env(model_id: str, gpu: dict):
+def write_windows_env(model_id: str, gpu: dict, model_dict: dict = None):
     gpu_layers = 0
     vendor     = gpu.get("vendor") if gpu.get("found") else None
+    model_dict = model_dict or {}
 
-    if gpu["found"]:
+    mode = model_dict.get("_mode", "cpu") if isinstance(model_dict, dict) else "cpu"
+    if gpu["found"] and mode == "gpu":
         gpu_layers = min(35, int((gpu["vram_gb"] * 1024) / 200))
+    elif gpu["found"] and mode == "hybrid":
+        gpu_layers = max(1, min(int((gpu["vram_gb"] * 1024) / 200) - 2, 20))
 
     # No Windows o Ollama usa DirectML para AMD (sem precisar do ROCm)
     # e CUDA para Nvidia — ambos configurados automaticamente pelo Ollama.exe.
@@ -475,6 +546,7 @@ def main():
 
     if gpu["found"]:
         vendor = gpu.get("vendor", "")
+        vram_note = gpu.get("_vram_note", "")
         if vendor == "nvidia":
             success(f"GPU Nvidia: {gpu['name']} ({gpu['vram_gb']} GB VRAM) — CUDA")
         elif vendor == "amd":
@@ -482,6 +554,13 @@ def main():
             info("AMD no Windows usa DirectML (nativo no Ollama.exe, sem instalar ROCm)")
         else:
             success(f"GPU: {gpu['name']} ({gpu['vram_gb']} GB VRAM)")
+
+        if vram_note:
+            warn(f"VRAM detectada via {vram_note} — pode estar incorreta.")
+            if ask_yes_no("Deseja informar a VRAM manualmente?", default=True):
+                vram_manual = float(ask("VRAM real em GB (verifique no Gerenciador de Tarefas → GPU)", str(gpu["vram_gb"])))
+                gpu["vram_gb"] = vram_manual
+                success(f"VRAM ajustada para {vram_manual} GB")
     else:
         warn("GPU dedicada não detectada — usará CPU")
         if ask_yes_no("Você tem GPU (Nvidia ou AMD) não detectada?", default=False):
@@ -497,8 +576,16 @@ def main():
     # ── 3. Modelo ─────────────────────────────────────────────────────
     step("3 / 5  Escolhendo modelo...")
     recommended = recommend_model(ram_gb, gpu)
+    mode = recommended.get("_mode", "cpu")
+    mode_label = {"gpu": "GPU pura", "hybrid": "Hibrido GPU+RAM", "cpu": "CPU only"}.get(mode, mode)
     print(f"\n  Recomendado: {C.CYAN}{recommended['label']}{C.RESET}")
-    print(f"  Tamanho: ~{recommended['size_gb']}GB | Qualidade: {recommended['quality']}\n")
+    print(f"  Tamanho: ~{recommended['size_gb']}GB | Qualidade: {recommended['quality']} | Modo: {mode_label}\n")
+    if mode == "hybrid":
+        info(
+            f"Modo hibrido: VRAM insuficiente para o modelo inteiro, "
+            f"mas sua RAM ({ram_gb}GB) compensa. "
+            f"Parte roda na GPU via DirectML, parte na RAM."
+        )
 
     chosen = recommended
     if not ask_yes_no("Usar este modelo?", default=True):
@@ -518,7 +605,7 @@ def main():
     step("4 / 5  Configurando Python...")
     setup_venv()
     install_dependencies()
-    config = write_windows_env(chosen["id"], gpu)
+    config = write_windows_env(chosen["id"], gpu, model_dict=chosen)
     success(".env.windows criado")
 
     print(f"\n  {C.DIM}{'─' * 44}{C.RESET}")
