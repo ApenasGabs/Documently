@@ -249,6 +249,25 @@ MODELS = [
     },
 ]
 
+EXTRACTION_PRESETS = {
+    "1": {
+        "label": "Business rules (recommended)",
+        "targets": "business_rules,validations,integrations,dependencies",
+    },
+    "2": {
+        "label": "Endpoint contracts",
+        "targets": "endpoint_contracts,auth,request_response,error_mapping",
+    },
+    "3": {
+        "label": "Architecture overview",
+        "targets": "responsibilities,dependencies,data_flow,risks",
+    },
+    "4": {
+        "label": "Everything (broader, costs more)",
+        "targets": "business_rules,validations,endpoint_contracts,auth,request_response,error_mapping,integrations,dependencies,responsibilities,data_flow,risks",
+    },
+}
+
 
 def recommend_model(ram_gb: int, gpu: dict) -> dict:
     vram = gpu["vram_gb"] if gpu["found"] else 0
@@ -304,9 +323,29 @@ def choose_model(current: dict) -> dict:
     return current
 
 
+def choose_extraction_targets() -> str:
+    print(f"\n{C.BOLD}  Escopo de extração:{C.RESET}\n")
+    for key, item in EXTRACTION_PRESETS.items():
+        print(f"  {C.BOLD}{C.WHITE}[{key}]{C.RESET} {item['label']}")
+        print(f"      {C.DIM}{item['targets']}{C.RESET}")
+    print(f"  {C.BOLD}{C.WHITE}[5]{C.RESET} Custom (lista separada por vírgula)\n")
+
+    choice = ask("Escolha", "1")
+    if choice in EXTRACTION_PRESETS:
+        return EXTRACTION_PRESETS[choice]["targets"]
+    if choice == "5":
+        custom = ask(
+            "Informe os targets (ex: business_rules,endpoint_contracts,integrations)",
+            EXTRACTION_PRESETS["1"]["targets"],
+        )
+        parts = [x.strip() for x in custom.split(",") if x.strip()]
+        return ",".join(parts) if parts else EXTRACTION_PRESETS["1"]["targets"]
+    return EXTRACTION_PRESETS["1"]["targets"]
+
+
 # ── Geração do .env ───────────────────────────────────────────────────
 
-def generate_env(model: dict, gpu: dict) -> dict:
+def generate_env(model: dict, gpu: dict, extraction_targets: str | None = None) -> dict:
     gpu_layers = 0
     if gpu["found"]:
         # AMD ROCm e Nvidia CUDA usam o mesmo parâmetro no Ollama
@@ -328,6 +367,12 @@ def generate_env(model: dict, gpu: dict) -> dict:
         "DEEP_MAX_WORDS":        "80",
         "SYNTH_MAX_WORDS":       "260",
         "FALLBACK_MAX_WORDS":    "180",
+        "DEEP_CONTEXT_CHARS":    "180",
+        "DEEP_BODY_CHAR_CAP":    "1400",
+        "DEEP_MIN_PREDICT":      "128",
+        "DEEP_FUNCTION_PREDICT": "220",
+        "DEEP_CLASS_PREDICT":    "320",
+        "EXTRACT_TARGETS":       extraction_targets or EXTRACTION_PRESETS["1"]["targets"],
         "HARDWARE_PROFILE":      "mid",
         "TELEMETRY_ENABLED":     "1",
         "TELEMETRY_LOG_DIR":     "/output/logs",
@@ -437,6 +482,12 @@ def write_env(config: dict):
         "# SUMMARY_NUM_PREDICT: tokens para resumo do projeto",
         "# MAX_FUNCTION_DOC_ITEMS: máximo de funções detalhadas por arquivo na seção por função",
         "# DEEP_MAX_WORDS: limite de palavras por função/classe no deep dive",
+        "# DEEP_CONTEXT_CHARS: limite de contexto injetado no deep dive",
+        "# DEEP_BODY_CHAR_CAP: limite efetivo de código enviado ao deep dive",
+        "# DEEP_MIN_PREDICT: piso de tokens no deep dive",
+        "# DEEP_FUNCTION_PREDICT: teto de tokens para funções no deep dive",
+        "# DEEP_CLASS_PREDICT: teto de tokens para classes no deep dive",
+        "# EXTRACT_TARGETS: define o escopo funcional/contratos que devem ser extraídos",
         "# SYNTH_MAX_WORDS: limite de palavras no resumo funcional por arquivo",
         "# FALLBACK_MAX_WORDS: limite de palavras na análise de arquivos sem funções",
         "# TELEMETRY_ENABLED: 1 para persistir telemetria JSONL de chamadas Ollama",
@@ -602,7 +653,8 @@ def main():
 
     # ── 3. Gera .env ──────────────────────────────────────────────────
     step("3 / 4  Gerando .env...")
-    config = generate_env(chosen, gpu)
+    extraction_targets = choose_extraction_targets()
+    config = generate_env(chosen, gpu, extraction_targets=extraction_targets)
     print(f"\n  {C.DIM}{'─' * 44}{C.RESET}")
     for key, value in config.items():
         print(f"  {C.YELLOW}{key}{C.RESET}={C.WHITE}{value}{C.RESET}")

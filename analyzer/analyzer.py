@@ -53,11 +53,35 @@ MAX_FUNCTION_DOC_ITEMS = int(os.getenv("MAX_FUNCTION_DOC_ITEMS", 12))
 DEEP_MAX_WORDS = int(os.getenv("DEEP_MAX_WORDS", 80))
 SYNTH_MAX_WORDS = int(os.getenv("SYNTH_MAX_WORDS", 260))
 FALLBACK_MAX_WORDS = int(os.getenv("FALLBACK_MAX_WORDS", 180))
+DEEP_CONTEXT_CHARS = int(os.getenv("DEEP_CONTEXT_CHARS", 180))
+DEEP_BODY_CHAR_CAP = int(os.getenv("DEEP_BODY_CHAR_CAP", 1400))
+DEEP_MIN_PREDICT = int(os.getenv("DEEP_MIN_PREDICT", 128))
+DEEP_FUNCTION_PREDICT = int(os.getenv("DEEP_FUNCTION_PREDICT", 220))
+DEEP_CLASS_PREDICT = int(os.getenv("DEEP_CLASS_PREDICT", 320))
 PROMPT_DEBUG_LOG = os.getenv("PROMPT_DEBUG_LOG", "1").lower() not in {"0", "false", "no"}
 PROMPT_LOG_MAX_CHARS = int(os.getenv("PROMPT_LOG_MAX_CHARS", 1200))
 PROMPT_LOG_INCLUDE_FULL = os.getenv("PROMPT_LOG_INCLUDE_FULL", "0").lower() in {"1", "true", "yes"}
 TRUNCATION_STATS_FILE = os.getenv("TRUNCATION_STATS_FILE", "truncation_stats.json")
 TELEMETRY_LOG_DIR = Path(os.getenv("TELEMETRY_LOG_DIR", "/output/logs"))
+EXTRACT_TARGETS_RAW = os.getenv(
+    "EXTRACT_TARGETS",
+    "business_rules,validations,integrations,dependencies",
+)
+EXTRACT_TARGETS = [x.strip() for x in EXTRACT_TARGETS_RAW.split(",") if x.strip()]
+
+EXTRACT_TARGET_HINTS = {
+    "business_rules": "business rules and outcomes",
+    "validations": "validations and decision points",
+    "endpoint_contracts": "endpoint contracts (method/path/params/auth/response/error)",
+    "auth": "authentication and authorization requirements",
+    "request_response": "request/response payload contracts",
+    "error_mapping": "error handling and status mapping",
+    "integrations": "external integrations and side effects",
+    "dependencies": "key dependencies",
+    "responsibilities": "file/module responsibilities",
+    "data_flow": "data flow between components",
+    "risks": "functional risks and limitations",
+}
 
 # Limites de fallback para etapas
 STAGE_LIMITS = {
@@ -72,7 +96,7 @@ def _estimate_tokens(text: str) -> int:
     return max(1, len(text) // 4)
 
 
-def _trim_middle(text: str, max_chars: int, marker: str = "\n\n[...conteúdo omitido...]\n\n") -> str:
+def _trim_middle(text: str, max_chars: int, marker: str = "\n\n[...content omitted...]\n\n") -> str:
     if max_chars <= 0 or len(text) <= max_chars:
         return text
     if max_chars <= len(marker) + 8:
@@ -109,7 +133,7 @@ def _compact_scan_list(nodes: list[FunctionNode], filename: str) -> str:
     omitted = len(nodes) - len(lines)
     if omitted > 0:
         lines.append(f"- ... +{omitted} item(ns) omitido(s)")
-    return f"Itens detectados em {filename}:\n" + "\n".join(lines)
+    return f"Detected items in {filename}:\n" + "\n".join(lines)
 
 
 def _append_running_context(current: str, name: str, doc: str) -> str:
@@ -193,6 +217,17 @@ def _record_truncation_stats(meta: dict, had_truncation: bool, resolved_after_re
         ext_item["best_settings"][setting] = ext_item["best_settings"].get(setting, 0) + 1
 
     _save_stats(stats)
+
+
+def _extraction_focus_text() -> str:
+    if not EXTRACT_TARGETS:
+        return ""
+    hints = [EXTRACT_TARGET_HINTS.get(t, t.replace("_", " ")) for t in EXTRACT_TARGETS]
+    return "Extraction scope:\n- " + "\n- ".join(hints)
+
+
+def _wants_endpoint_contracts() -> bool:
+    return "endpoint_contracts" in EXTRACT_TARGETS or "request_response" in EXTRACT_TARGETS
 
 
 # ── Ollama ────────────────────────────────────────────────────────────
@@ -427,10 +462,11 @@ def _step_scan(nodes: list[FunctionNode], filename: str, lang_label: str,
     """
     scan_list = _compact_scan_list(nodes, filename)
     prompt = (
-        f"Analise itens de {lang_label} com foco em regra de negócio.\n\n"
+        f"Analyze {lang_label} items with business-rule focus.\n\n"
         f"{scan_list}\n\n"
-        f"Retorne UMA linha por item no formato: nome — papel funcional. "
-        f"Sem introdução e sem texto extra."
+        f"{_extraction_focus_text()}\n\n"
+        f"Return ONE line per item as: name — functional role. "
+        f"No intro, no extra text. Return in English."
     )
     return call_ollama(prompt, num_predict=SCAN_NUM_PREDICT, meta={
         "stage": "scan",
@@ -445,18 +481,29 @@ def _step_deep(node: FunctionNode, context: str, lang_label: str,
     """
     Passo 2 — Deep dive: analisa o corpo de uma função individualmente.
     """
-    num_predict = max(192, min(len(node.body) // 5, DEEP_NUM_PREDICT))
-    body = _trim_middle(node.body, MAX_DEEP_BODY_CHARS)
-    ctx = _trim_middle(context, CONTEXT_SNIPPET_CHARS)
+    target_cap = DEEP_CLASS_PREDICT if node.kind == "class" else DEEP_FUNCTION_PREDICT
+    estimated = max(DEEP_MIN_PREDICT, len(node.body) // 12)
+    num_predict = min(DEEP_NUM_PREDICT, target_cap, estimated)
+    body_limit = min(MAX_DEEP_BODY_CHARS, DEEP_BODY_CHAR_CAP)
+    context_limit = min(CONTEXT_SNIPPET_CHARS, DEEP_CONTEXT_CHARS)
+    body = _trim_middle(node.body, body_limit)
+    ctx = _trim_middle(context, context_limit)
+    endpoint_line = (
+        "- endpoint contract details if present: method/path/params/auth/response/error\n"
+        if _wants_endpoint_contracts()
+        else ""
+    )
     prompt = (
-        f"Analise esta {node.kind} de {lang_label}.\n\n"
-        f"Contexto curto:\n{ctx}\n\n"
-        f"Código:\n```\n{body}\n```\n\n"
-        f"Responda em até {DEEP_MAX_WORDS} palavras com foco funcional (não linha a linha):\n"
-        f"- regra de negócio impactada (ou 'nenhuma relevante')\n"
-        f"- entradas/saídas de negócio\n"
-        f"- decisão/validação importante\n"
-        f"Se for apenas infraestrutura/plumbing, diga isso de forma curta."
+        f"Analyze this {node.kind} in {lang_label}.\n\n"
+        f"Short context:\n{ctx}\n\n"
+        f"Code:\n```\n{body}\n```\n\n"
+        f"{_extraction_focus_text()}\n\n"
+        f"Answer in up to {DEEP_MAX_WORDS} words with functional focus (not line-by-line):\n"
+        f"- impacted business rule (or 'none relevant')\n"
+        f"- business input/output\n"
+        f"- key decision/validation\n"
+        f"{endpoint_line}"
+        f"Keep terse, no examples, no repetition. Return in English."
     )
     return call_ollama(prompt, num_predict=num_predict, meta={
         "stage": "deep",
@@ -482,18 +529,19 @@ def _step_synth(annotations: list[dict], filename: str,
     if len(annotations) > len(compact):
         annot_text += f"\n\n... +{len(annotations) - len(compact)} item(ns) omitido(s)."
     prompt = (
-        f"Sintetize documentação de {lang_label} para {filename}.\n\n"
-        f"Anotações:\n\n"
+        f"Synthesize {lang_label} documentation for {filename}.\n\n"
+        f"Notes:\n\n"
         f"{annot_text[:5000]}\n\n"
         f"{profile['prompt_focus']}\n\n"
-        f"Gere documentação objetiva, focada em regra de negócio e responsabilidades. "
-        f"Evite explicar implementação linha a linha.\n"
-        f"Inclua somente:\n"
-        f"- objetivo funcional do arquivo\n"
-        f"- regras/validações de negócio principais\n"
-        f"- entradas/saídas e integrações externas\n"
-        f"- riscos e limitações funcionais\n"
-        f"Máx {SYNTH_MAX_WORDS} palavras."
+        f"{_extraction_focus_text()}\n\n"
+        f"Generate concise docs focused on business rules and responsibilities. "
+        f"Avoid line-by-line implementation details.\n"
+        f"Include only:\n"
+        f"- file functional purpose\n"
+        f"- main business rules/validations\n"
+        f"- inputs/outputs and external integrations\n"
+        f"- functional risks/limitations\n"
+        f"Max {SYNTH_MAX_WORDS} words. Return in English."
     )
     return call_ollama(prompt, num_predict=SYNTH_NUM_PREDICT, meta={
         "stage": "synth",
@@ -514,11 +562,20 @@ def analyze_file(filepath: Path, project_path: Path, context_window: list,
     fname = filepath.name
     file_ext = filepath.suffix.lower() or "<none>"
     file_status = status_files.get(rel, {"done": False, "steps": {}})
+    if not file_status.get("started_at"):
+        file_status["started_at"] = datetime.now().isoformat()
+    status_files[rel] = file_status
 
     start_file = time.time()
     try:
         content = filepath.read_text(errors="replace")
     except Exception as e:
+        elapsed_file = time.time() - start_file
+        file_status["done"] = False
+        file_status["error"] = str(e)
+        file_status["finished_at"] = datetime.now().isoformat()
+        file_status["elapsed_sec"] = round(elapsed_file, 3)
+        status_files[rel] = file_status
         log_err(f"não foi possível ler: {e}", project, fname)
         return None
 
@@ -540,7 +597,7 @@ def analyze_file(filepath: Path, project_path: Path, context_window: list,
         )
         nodes = nodes[:MAX_NODES_PER_FILE]
 
-    doc_parts    = [f"# 📄 `{fname}`\n\n_Perfil: {lang_label}_\n"]
+    doc_parts    = [f"# 📄 `{fname}`\n\n_Profile: {lang_label}_\n"]
     full_analysis = []
     context_summary = _compact_context(context_window)
 
@@ -555,12 +612,13 @@ def analyze_file(filepath: Path, project_path: Path, context_window: list,
             log_info(f"chunk {i+1}/{len(chunks)} → Ollama...", project, fname)
             num_predict = max(256, min(_estimate_tokens(chunk) // 2, 1536))
             prompt = (
-                f"Analise o arquivo {fname} ({lang_label}).\n\n"
-                f"Contexto curto: {context_summary}\n\n"
-                f"Arquivo: {fname}\n\n```\n{chunk}\n```\n\n"
+                f"Analyze file {fname} ({lang_label}).\n\n"
+                f"Short context: {context_summary}\n\n"
+                f"File: {fname}\n\n```\n{chunk}\n```\n\n"
                 f"{profile['prompt_focus']}\n\n"
-                f"Documente em visão funcional (regra de negócio), sem detalhar linha a linha. "
-                f"Máx {FALLBACK_MAX_WORDS} palavras."
+                f"{_extraction_focus_text()}\n\n"
+                f"Document from a functional business-rule perspective, no line-by-line detail. "
+                f"Max {FALLBACK_MAX_WORDS} words. Return in English."
             )
             analysis = call_ollama(prompt, num_predict=num_predict, meta={
                 "stage": "fallback_chunk",
@@ -582,7 +640,7 @@ def analyze_file(filepath: Path, project_path: Path, context_window: list,
         # ── Passo 1: Scan ─────────────────────────────────────────────
         log_info("passo 1/3 — scan de assinaturas", project, fname)
         scan_result = _step_scan(nodes, fname, lang_label, project=project, file_ext=file_ext)
-        doc_parts.append(f"## Visão Geral das Funções\n\n{scan_result}\n")
+        doc_parts.append(f"## Function Overview\n\n{scan_result}\n")
 
         # ── Passo 2: Deep dive por função ─────────────────────────────
         log_info("passo 2/3 — análise individual", project, fname)
@@ -602,15 +660,15 @@ def analyze_file(filepath: Path, project_path: Path, context_window: list,
         ])
         if len(annotations) > len(visible_annotations):
             annot_section += (
-                f"\n\n_+{len(annotations) - len(visible_annotations)} função(ões)/classe(s) "
-                f"omitida(s) para manter foco no entendimento funcional._"
+                f"\n\n_+{len(annotations) - len(visible_annotations)} function(s)/class(es) "
+                f"omitted to keep functional focus._"
             )
-        doc_parts.append(f"## Documentação por Função\n\n{annot_section}\n")
+        doc_parts.append(f"## Function Notes\n\n{annot_section}\n")
 
         # ── Passo 3: Síntese ──────────────────────────────────────────
         log_info("passo 3/3 — síntese do arquivo", project, fname)
         synth = _step_synth(annotations, fname, lang_label, profile, project=project, file_ext=file_ext)
-        doc_parts.append(f"## Resumo do Arquivo\n\n{synth}\n")
+        doc_parts.append(f"## File Summary\n\n{synth}\n")
         full_analysis = [a["doc"] for a in annotations] + [synth]
 
         # Atualiza janela de contexto com síntese
@@ -624,21 +682,26 @@ def analyze_file(filepath: Path, project_path: Path, context_window: list,
         doc_path      = docs_dir / project / relative_path.with_suffix(".md")
         doc_path.parent.mkdir(parents=True, exist_ok=True)
         doc_path.write_text("\n".join(doc_parts), encoding="utf-8")
+        elapsed_file = time.time() - start_file
 
         file_status["done"]     = True
         file_status["error"]    = None
         file_status["doc_path"] = str(doc_path)
-        status_files[rel]        = file_status
+        file_status["finished_at"] = datetime.now().isoformat()
+        file_status["elapsed_sec"] = round(elapsed_file, 3)
+        status_files[rel] = file_status
 
-        elapsed_file = time.time() - start_file
         log_info(f"fim da análise do arquivo: {fname} — tempo total={elapsed_file:.2f}s", project, fname)
 
         log_ok(f"salvo → {doc_path.relative_to(docs_dir)}", project, fname)
         return {"path": str(relative_path), "analysis": " ".join(full_analysis)}
     except Exception as e:
+        elapsed_file = time.time() - start_file
         file_status["done"]  = False
         file_status["error"] = str(e)
-        status_files[rel]     = file_status
+        file_status["finished_at"] = datetime.now().isoformat()
+        file_status["elapsed_sec"] = round(elapsed_file, 3)
+        status_files[rel] = file_status
         log_err(f"erro ao salvar/analisar arquivo: {e}", project, fname)
         return None
 
@@ -656,23 +719,26 @@ def generate_summary(project_name: str, project_path: Path, profile: dict,
     if len(file_docs) > len(summary_items):
         summary_items.append(f"- ... +{len(file_docs) - len(summary_items)} arquivo(s) omitido(s)")
     context = "\n".join(summary_items)
+    endpoint_section = "## Endpoint Contracts\n" if _wants_endpoint_contracts() else ""
     prompt = (
-        f"Você é um arquiteto de software sênior.\n\n"
-        f"Projeto: {project_name}\n"
-        f"Perfil: {profile['lang_label']}\n"
+        f"You are a senior software architect.\n\n"
+        f"Project: {project_name}\n"
+        f"Profile: {profile['lang_label']}\n"
         f"Framework: {framework if framework else 'unknown'}\n"
-        f"Arquivos analisados: {len(file_docs)}\n"
-        f"Tempo: {elapsed_min:.1f} min\n\n"
-        f"Estrutura:\n```\n{tree}\n```\n\n"
-        f"Resumo por arquivo:\n{context[:4200]}\n\n"
-        f"Gere um relatório técnico em português, focado em regra de negócio (evite linha a linha), com:\n"
-        f"## Visão Geral\n"
-        f"## Arquitetura\n"
-        f"## Regras de Negócio Principais\n"
-        f"## Arquivos por Responsabilidade\n"
-        f"## Dependências Principais\n"
-        f"## Pontos de Atenção\n\n"
-        f"Seja objetivo e técnico."
+        f"Analyzed files: {len(file_docs)}\n"
+        f"Elapsed: {elapsed_min:.1f} min\n\n"
+        f"Structure:\n```\n{tree}\n```\n\n"
+        f"Per-file summary:\n{context[:4200]}\n\n"
+        f"Selected extraction scope: {', '.join(EXTRACT_TARGETS) if EXTRACT_TARGETS else 'default'}\n\n"
+        f"Generate an English technical report focused on business rules (avoid line-by-line):\n"
+        f"## Overview\n"
+        f"## Architecture\n"
+        f"## Main Business Rules\n"
+        f"{endpoint_section}"
+        f"## Files by Responsibility\n"
+        f"## Key Dependencies\n"
+        f"## Risks and Attention Points\n\n"
+        f"Be concise and technical."
     )
 
     summary = call_ollama(prompt, num_predict=SUMMARY_NUM_PREDICT, meta={
@@ -682,11 +748,13 @@ def generate_summary(project_name: str, project_path: Path, profile: dict,
         "file_ext": ".md",
     })
     header  = (
-        f"# 📋 Resumo: `{project_name}`\n\n"
-        f"_Gerado em {datetime.now().strftime('%d/%m/%Y %H:%M')} · "
-        f"Perfil: **{profile['lang_label']}** · "
+        f"# 📋 Summary: `{project_name}`\n\n"
+        f"_Generated at {datetime.now().strftime('%d/%m/%Y %H:%M')} · "
+        f"Profile: **{profile['lang_label']}** · "
         f"Framework: **{framework if framework else 'unknown'}** · "
-        f"{len(file_docs)} arquivo(s) · {elapsed_min:.1f} min_\n\n"
-        f"## 🗂 Estrutura\n\n```\n{tree}\n```\n\n---\n\n"
+        f"{len(file_docs)} file(s) · {elapsed_min:.1f} min_\n\n"
+        f"## 🗂 Structure\n\n```\n{tree}\n```\n\n---\n\n"
+        f"## 🎯 Extraction Scope\n\n"
+        f"{', '.join(EXTRACT_TARGETS) if EXTRACT_TARGETS else 'default'}\n\n"
     )
     return header + summary

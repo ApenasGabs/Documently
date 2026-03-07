@@ -20,6 +20,37 @@ from pathlib import Path
 from analyzer.profiles import detect_profile
 
 
+def parse_iso_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def format_duration(seconds: float | int | None) -> str:
+    if seconds is None:
+        return "-"
+    total = max(0, int(seconds))
+    minutes, sec = divmod(total, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours > 0:
+        return f"{hours}h{minutes:02d}m"
+    if minutes > 0:
+        return f"{minutes}m{sec:02d}s"
+    return f"{sec}s"
+
+
+def project_elapsed_seconds(started_at: str | None, finished_at: str | None) -> float | None:
+    started = parse_iso_datetime(started_at)
+    if not started:
+        return None
+    finished = parse_iso_datetime(finished_at)
+    end = finished or datetime.now()
+    return max(0.0, (end - started).total_seconds())
+
+
 def resolve_projects_dir() -> Path:
     env_path = os.getenv("PROJECTS_DIR")
     if env_path:
@@ -263,6 +294,7 @@ def build_snapshot(projects_dir: Path, status_dir: Path, docs_dir: Path,
             "progress": progress,
             "started_at": status.get("started_at"),
             "finished_at": status.get("finished_at"),
+            "elapsed_sec": project_elapsed_seconds(status.get("started_at"), status.get("finished_at")),
             "eta": format_eta(
                 status.get("started_at"),
                 done,
@@ -278,6 +310,7 @@ def build_snapshot(projects_dir: Path, status_dir: Path, docs_dir: Path,
     files_pending = sum(r["pending"] for r in rows)
     files_error = sum(r["errors"] for r in rows)
     progress_pct = (files_done / files_total * 100.0) if files_total else 0.0
+    elapsed_total_sec = sum((r.get("elapsed_sec") or 0.0) for r in rows)
 
     summary = {
         "projects_total": len(rows),
@@ -286,6 +319,7 @@ def build_snapshot(projects_dir: Path, status_dir: Path, docs_dir: Path,
         "files_pending": files_pending,
         "files_error": files_error,
         "progress_pct": progress_pct,
+        "elapsed_total_sec": elapsed_total_sec,
     }
     return rows, summary
 
@@ -297,7 +331,8 @@ def print_snapshot(rows: list[dict], summary: dict):
         f"Arquivos: {summary['files_done']}/{summary['files_total']} "
         f"({summary['progress_pct']:.1f}%) | "
         f"Pendentes: {summary['files_pending']} | "
-        f"Erros: {summary['files_error']}"
+        f"Erros: {summary['files_error']} | "
+        f"Tempo total: {format_duration(summary.get('elapsed_total_sec'))}"
     )
 
     if not rows:
@@ -306,7 +341,7 @@ def print_snapshot(rows: list[dict], summary: dict):
 
     header = (
         f"{'Projeto':28} {'Perfil':20} {'Progresso':10} {'Done/Total':11} "
-        f"{'Pend':5} {'Err':4} {'ETA':10}"
+        f"{'Pend':5} {'Err':4} {'Tempo':10} {'ETA':10}"
     )
     print("\n" + header)
     print("-" * len(header))
@@ -319,6 +354,7 @@ def print_snapshot(rows: list[dict], summary: dict):
             f"{row['done']:4}/{row['total']:<6} "
             f"{row['pending']:<5} "
             f"{row['errors']:<4} "
+            f"{format_duration(row.get('elapsed_sec'))[:10]:10} "
             f"{row['eta'][:10]:10}"
         )
 

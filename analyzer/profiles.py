@@ -28,11 +28,11 @@ PROFILES = {
         "lang_key": "javascript",
     "lang_label": "Solidity",
         "prompt_focus": (
-            "Audite este contrato inteligente com foco em:\n"
-            "- Funções públicas/externas e seus modificadores de acesso\n"
-            "- Eventos emitidos e quando ocorrem\n"
-            "- Riscos de segurança (reentrância, overflow, access control)\n"
-            "- Padrões utilizados (Ownable, Pausable, ERC20, ERC721, etc)"
+            "Focus on business behavior and security:\n"
+            "- Public/external functions and access control\n"
+            "- Events and when they are emitted\n"
+            "- Security risks (reentrancy, overflow, access control)\n"
+            "- Standards/patterns used (Ownable, Pausable, ERC20, ERC721)"
         ),
     },
     "javascript": {
@@ -42,11 +42,11 @@ PROFILES = {
         "lang_key": "javascript",
     "lang_label": "JavaScript/TypeScript",
         "prompt_focus": (
-            "Documente este código JS/TS com foco em:\n"
-            "- Funções e componentes exportados\n"
-            "- Tipos e interfaces relevantes\n"
-            "- Efeitos colaterais, chamadas de API ou acesso a estado global\n"
-            "- Dependências externas utilizadas"
+            "Focus on business behavior:\n"
+            "- Exported functions/components\n"
+            "- Relevant types/interfaces\n"
+            "- Side effects, API calls, global state usage\n"
+            "- External dependencies"
         ),
     },
     "java": {
@@ -62,11 +62,11 @@ PROFILES = {
         "lang_key": "java",
     "lang_label": "Java",
         "prompt_focus": (
-            "Documente este código Java com foco em:\n"
-            "- Classes, interfaces e responsabilidades\n"
-            "- Métodos públicos e suas assinaturas\n"
-            "- Anotações relevantes (Spring, JPA, Lombok, etc)\n"
-            "- Padrões de design identificados (singleton, factory, etc)"
+            "Focus on business behavior:\n"
+            "- Classes/interfaces and responsibilities\n"
+            "- Public methods and contracts\n"
+            "- Relevant annotations (Spring, JPA, Lombok)\n"
+            "- Design patterns when meaningful"
         ),
     },
     "python": {
@@ -76,11 +76,11 @@ PROFILES = {
         "lang_key": "python",
     "lang_label": "Python",
         "prompt_focus": (
-            "Documente este código Python com foco em:\n"
-            "- Funções e classes principais\n"
-            "- Parâmetros e tipos esperados\n"
-            "- Dependências externas utilizadas\n"
-            "- Fluxo principal de execução"
+            "Focus on business behavior:\n"
+            "- Main functions/classes\n"
+            "- Input/output contracts\n"
+            "- External dependencies\n"
+            "- Main execution flow"
         ),
     },
     "rust": {
@@ -90,11 +90,11 @@ PROFILES = {
         "lang_key": "rust",
     "lang_label": "Rust",
         "prompt_focus": (
-            "Documente este código Rust com foco em:\n"
-            "- Structs, enums e traits definidos\n"
-            "- Funções públicas e suas assinaturas\n"
-            "- Uso de unsafe e justificativa\n"
-            "- Lifetimes e ownership relevantes"
+            "Focus on business behavior:\n"
+            "- Structs/enums/traits\n"
+            "- Public functions and contracts\n"
+            "- Unsafe usage and rationale\n"
+            "- Relevant ownership/lifetime constraints"
         ),
     },
     "go": {
@@ -104,11 +104,11 @@ PROFILES = {
         "lang_key": "go",
     "lang_label": "Go",
         "prompt_focus": (
-            "Documente este código Go com foco em:\n"
-            "- Pacotes e funções exportadas\n"
-            "- Structs e interfaces definidas\n"
-            "- Goroutines e uso de channels\n"
-            "- Tratamento de erros"
+            "Focus on business behavior:\n"
+            "- Packages and exported functions\n"
+            "- Structs/interfaces\n"
+            "- Goroutines/channel usage\n"
+            "- Error handling strategy"
         ),
     },
     "fallback": {
@@ -119,10 +119,10 @@ PROFILES = {
         "ignore_dirs": {".git", "node_modules", "target", "build", "dist", "__pycache__"},
         "lang_label": "código",
         "prompt_focus": (
-            "Analise este trecho de código e documente:\n"
-            "- O que faz\n"
-            "- Funções e estruturas principais\n"
-            "- Riscos ou problemas encontrados"
+            "Analyze and document:\n"
+            "- Functional purpose\n"
+            "- Main functions/structures\n"
+            "- Risks or issues"
         ),
     },
 }

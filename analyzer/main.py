@@ -13,7 +13,7 @@ from storage  import load_status, save_status, save_summary
 from analyzer import (
     wait_for_ollama, check_model_available,
     analyze_file, generate_summary,
-    MODEL, MAX_TOKENS, OLLAMA_HOST,
+    MODEL, MAX_TOKENS, OLLAMA_HOST, EXTRACT_TARGETS,
 )
 from profiles import detect_profile
 from frameworks import detect_framework
@@ -41,7 +41,9 @@ def process_project(project_path: Path):
 
     profile = detect_profile(project_path)
     status["profile"] = profile["lang_label"]
+    status["extraction_targets"] = EXTRACT_TARGETS
     log_info(f"perfil: {profile['lang_label']} | modelo: {MODEL}", name)
+    log_info(f"escopo de extração: {', '.join(EXTRACT_TARGETS) if EXTRACT_TARGETS else 'default'}", name)
     # Detecta framework (determinístico + fallback IA)
     framework = detect_framework(project_path, profile)
     status["framework"] = framework
@@ -79,8 +81,18 @@ def process_project(project_path: Path):
         except Exception as e:
             rel = str(filepath)
             status["files"].setdefault(rel, {})
+            file_status = status["files"][rel]
+            if not file_status.get("started_at"):
+                file_status["started_at"] = datetime.now().isoformat()
             status["files"][rel]["done"] = False
             status["files"][rel]["error"] = str(e)
+            finished_at = datetime.now()
+            status["files"][rel]["finished_at"] = finished_at.isoformat()
+            try:
+                started_dt = datetime.fromisoformat(file_status["started_at"])
+                status["files"][rel]["elapsed_sec"] = round((finished_at - started_dt).total_seconds(), 3)
+            except Exception:
+                status["files"][rel]["elapsed_sec"] = file_status.get("elapsed_sec", 0.0)
             log_warn(f"falha ao analisar arquivo, seguindo para o próximo: {e}", name)
         save_status(STATUS_DIR, name, status)
 
@@ -98,6 +110,7 @@ def process_project(project_path: Path):
 def main():
     log_info("Documently iniciando...")
     log_info(f"modelo: {MODEL} | host: {OLLAMA_HOST} | max_tokens: {MAX_TOKENS}")
+    log_info(f"escopo de extração ativo: {', '.join(EXTRACT_TARGETS) if EXTRACT_TARGETS else 'default'}")
 
     wait_for_ollama()
     check_model_available()

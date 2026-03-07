@@ -17,6 +17,12 @@ O comportamento do analisador pode ser ajustado via variáveis no `.env`:
 | MAX_SYNTH_ITEMS         | Máximo de anotações usadas na síntese                  | 20      |
 | MAX_FUNCTION_DOC_ITEMS  | Máximo de funções detalhadas na seção por função       | 12      |
 | DEEP_MAX_WORDS          | Limite de palavras por função/classe no deep dive      | 80      |
+| DEEP_CONTEXT_CHARS      | Limite de contexto enviado no deep dive                | 180     |
+| DEEP_BODY_CHAR_CAP      | Limite efetivo de código enviado no deep dive          | 1400    |
+| DEEP_MIN_PREDICT        | Piso de tokens de resposta no deep dive                | 128     |
+| DEEP_FUNCTION_PREDICT   | Teto de tokens para funções no deep dive               | 220     |
+| DEEP_CLASS_PREDICT      | Teto de tokens para classes no deep dive               | 320     |
+| EXTRACT_TARGETS         | Escopo de extração funcional (csv de alvos)            | business_rules,validations,integrations,dependencies |
 | SYNTH_MAX_WORDS         | Limite de palavras na síntese funcional do arquivo     | 260     |
 | FALLBACK_MAX_WORDS      | Limite de palavras no fallback sem funções detectadas  | 180     |
 | MAX_PROJECT_SUMMARY_ITEMS | Máximo de arquivos incluídos no resumo final         | 40      |
@@ -37,6 +43,7 @@ Os artefatos de telemetria ficam em `./logs/` no host (montado do container):
 Se `./logs/` não estiver gravável, o analyzer usa fallback em `/tmp/documently-logs` dentro do container e registra aviso no stdout.
 
 Por padrão, a documentação agora prioriza entendimento funcional/regra de negócio e evita descrição linha a linha.
+Prompts e documentação gerada agora usam inglês por padrão para reduzir consumo de tokens.
 
 # 🔍 Documently - Local Code Analyzer
 
